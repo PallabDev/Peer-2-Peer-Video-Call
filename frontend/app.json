@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "Callie",
+    "slug": "callie-mobile",
+    "scheme": "callie",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "defaultChannel": "calls"
+        }
+      ]
+    ],
+    "android": {
+      "package": "com.callie.mobile",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "POST_NOTIFICATIONS"
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "com.callie.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Callie uses the camera for secure video calls.",
+        "NSMicrophoneUsageDescription": "Callie uses the microphone for secure audio and video calls."
+      }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "replace-with-your-eas-project-id"
+      }
+    }
+  }
+}

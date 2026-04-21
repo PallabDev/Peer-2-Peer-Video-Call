@@ -1,0 +1,21 @@
+services:
+  callie-postgres:
+    image: postgres:16-alpine
+    container_name: callie-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: callie
+      POSTGRES_PASSWORD: callie_dev_password
+      POSTGRES_DB: callie_db
+    volumes:
+      - callie_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U callie -d callie_db" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  callie_postgres_data:
