@@ -4,6 +4,14 @@ import { callLogsTable, usersTable } from "../../db/schema";
 import { CALL_STATUS } from "../constants/user";
 import { ApiError } from "../utils/ApiErrors";
 
+const terminalCallStatuses = new Set<string>([
+    CALL_STATUS.ENDED,
+    CALL_STATUS.DECLINED,
+    CALL_STATUS.CANCELLED,
+    CALL_STATUS.MISSED,
+    CALL_STATUS.FAILED,
+]);
+
 export const createCallLog = async (callerId: string, calleeId: string, mode: "audio" | "video") => {
     const [callLog] = await db.insert(callLogsTable).values({
         callerId,
@@ -33,7 +41,7 @@ export const updateCallStatus = async (
         patch.answeredAt = new Date();
     }
 
-    if ([CALL_STATUS.ENDED, CALL_STATUS.DECLINED, CALL_STATUS.CANCELLED, CALL_STATUS.MISSED, CALL_STATUS.FAILED].includes(status)) {
+    if (terminalCallStatuses.has(status)) {
         patch.endedAt = new Date();
     }
 

@@ -16,7 +16,8 @@ export const updateUser = async (req: AuthenticatedRequest, res: Response) => {
         throw new ApiError(400, "Invalid update payload.", result.error.flatten());
     }
 
-    const userId = req.params.userId;
+    const rawUserId = req.params.userId;
+    const userId = Array.isArray(rawUserId) ? rawUserId[0] : rawUserId;
     if (!userId) {
         throw new ApiError(400, "User id is required.");
     }

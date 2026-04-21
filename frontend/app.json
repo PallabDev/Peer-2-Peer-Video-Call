@@ -32,8 +32,9 @@
     },
     "extra": {
       "eas": {
-        "projectId": "replace-with-your-eas-project-id"
+        "projectId": "e9514d43-89be-48b0-92e7-7a775c5e8f38"
       }
-    }
+    },
+    "owner": "pallab1244"
   }
 }
