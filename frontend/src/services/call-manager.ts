@@ -1,6 +1,7 @@
 import { mediaDevices, RTCPeerConnection, RTCIceCandidate, RTCSessionDescription } from "react-native-webrtc";
 import type { MediaStream } from "react-native-webrtc";
 import InCallManager from "react-native-incall-manager";
+import { DeviceEventEmitter, type EmitterSubscription, Platform } from "react-native";
 import { socketService } from "./socket";
 import { useCallStore } from "../store/call-store";
 import type { CallMode, CallSession, Contact } from "../types/app";
@@ -18,7 +19,9 @@ class CallManager {
   private remoteStream: MediaStream | null = null;
   private listenersAttached = false;
   private audioSessionActive = false;
+  private audioSessionMedia: CallMode | null = null;
   private speakerSyncTimeouts: ReturnType<typeof setTimeout>[] = [];
+  private routeChangeSubscription: EmitterSubscription | null = null;
 
   attachSocket() {
     const socket = socketService.getSocket();
@@ -27,6 +30,7 @@ class CallManager {
     }
 
     this.listenersAttached = true;
+    this.attachAudioRouteListener();
 
     socket.on("call:incoming", async (payload: { callId: string; callerId: string; callerName?: string; mode: CallMode; }) => {
       const incomingCall: CallSession = {
@@ -132,6 +136,7 @@ class CallManager {
     socket.removeAllListeners("webrtc:offer");
     socket.removeAllListeners("webrtc:answer");
     socket.removeAllListeners("webrtc:ice-candidate");
+    this.detachAudioRouteListener();
     this.listenersAttached = false;
   }
 
@@ -235,9 +240,10 @@ class CallManager {
 
   async toggleSpeaker() {
     const nextSpeakerState = !useCallStore.getState().isSpeakerOn;
+    const activeCall = useCallStore.getState().activeCall;
     useCallStore.getState().setSpeakerOn(nextSpeakerState);
-    if (this.audioSessionActive) {
-      this.syncSpeakerState(nextSpeakerState);
+    if (this.audioSessionActive && activeCall) {
+      this.startAudioSession(activeCall.mode, nextSpeakerState);
     }
   }
 
@@ -289,7 +295,7 @@ class CallManager {
       } : false,
     });
 
-    this.startAudioSession(mode);
+    this.startAudioSession(mode, useCallStore.getState().isSpeakerOn);
     useCallStore.getState().setLocalStreamUrl(this.localStream.toURL());
     useCallStore.getState().setVideoEnabled(mode === "video");
   }
@@ -333,7 +339,7 @@ class CallManager {
       this.remoteStream = stream;
       useCallStore.getState().setRemoteStreamUrl(stream.toURL());
       useCallStore.getState().setStatus("connected");
-      this.syncSpeakerState(useCallStore.getState().isSpeakerOn);
+      this.startAudioSession(activeCall.mode, useCallStore.getState().isSpeakerOn);
     };
 
     if (createOffer) {
@@ -351,18 +357,24 @@ class CallManager {
     }
   }
 
-  private startAudioSession(mode: CallMode) {
-    if (this.audioSessionActive) {
-      this.syncSpeakerState(useCallStore.getState().isSpeakerOn);
+  private startAudioSession(callMode: CallMode, speakerEnabled: boolean) {
+    const desiredMedia = this.resolveAudioSessionMedia(callMode, speakerEnabled);
+
+    if (this.audioSessionActive && this.audioSessionMedia === desiredMedia) {
+      this.syncSpeakerState(speakerEnabled);
       return;
     }
 
-    InCallManager.start({ media: mode, auto: true });
-    this.audioSessionActive = true;
+    if (this.audioSessionActive) {
+      this.stopAudioSession();
+    }
 
-    const shouldUseSpeaker = mode === "video" || useCallStore.getState().isSpeakerOn;
-    useCallStore.getState().setSpeakerOn(shouldUseSpeaker);
-    this.syncSpeakerState(shouldUseSpeaker);
+    InCallManager.start({ media: desiredMedia, auto: Platform.OS === "android" ? false : true });
+    this.audioSessionActive = true;
+    this.audioSessionMedia = desiredMedia;
+
+    useCallStore.getState().setSpeakerOn(speakerEnabled);
+    this.syncSpeakerState(speakerEnabled);
   }
 
   private stopAudioSession() {
@@ -373,6 +385,15 @@ class CallManager {
     this.clearSpeakerSyncs();
     InCallManager.stop();
     this.audioSessionActive = false;
+    this.audioSessionMedia = null;
+  }
+
+  private resolveAudioSessionMedia(callMode: CallMode, speakerEnabled: boolean): CallMode {
+    if (callMode === "video") {
+      return "video";
+    }
+
+    return speakerEnabled ? "video" : "audio";
   }
 
   private applySpeakerState(enabled: boolean) {
@@ -410,6 +431,57 @@ class CallManager {
   private clearSpeakerSyncs() {
     this.speakerSyncTimeouts.forEach((timeout) => clearTimeout(timeout));
     this.speakerSyncTimeouts = [];
+  }
+
+  private attachAudioRouteListener() {
+    if (Platform.OS !== "android" || this.routeChangeSubscription) {
+      return;
+    }
+
+    this.routeChangeSubscription = DeviceEventEmitter.addListener("onAudioDeviceChanged", (event: {
+      availableAudioDeviceList?: string;
+      selectedAudioDevice?: string;
+    }) => {
+      const selectedRoute = event.selectedAudioDevice;
+      const availableRoutes = this.parseAvailableRoutes(event.availableAudioDeviceList);
+      const { activeCall, isSpeakerOn } = useCallStore.getState();
+
+      if (!this.audioSessionActive || !activeCall) {
+        return;
+      }
+
+      if (isSpeakerOn && selectedRoute !== "SPEAKER_PHONE" && availableRoutes.includes("SPEAKER_PHONE")) {
+        this.syncSpeakerState(true);
+        return;
+      }
+
+      if (
+        !isSpeakerOn &&
+        activeCall.mode === "audio" &&
+        selectedRoute === "SPEAKER_PHONE" &&
+        availableRoutes.includes("EARPIECE")
+      ) {
+        this.syncSpeakerState(false);
+      }
+    });
+  }
+
+  private detachAudioRouteListener() {
+    this.routeChangeSubscription?.remove();
+    this.routeChangeSubscription = null;
+  }
+
+  private parseAvailableRoutes(rawRoutes?: string) {
+    if (!rawRoutes) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(rawRoutes);
+      return Array.isArray(parsed) ? parsed.filter((route): route is string => typeof route === "string") : [];
+    } catch {
+      return [];
+    }
   }
 
   private navigateAwayFromCallScreen() {

@@ -15,6 +15,7 @@
           "defaultChannel": "calls"
         }
       ],
+      "./plugins/withAndroidSpeakerRouteFix",
       "expo-secure-store",
       "expo-font"
     ],
