@@ -14,6 +14,8 @@ type ActiveCall = {
     calleeId: string;
     mode: "audio" | "video";
     createdAt: number;
+    state: "ringing" | "answered";
+    timeout: NodeJS.Timeout | null;
 };
 
 const userSockets = new Map<string, Set<string>>();
@@ -46,6 +48,10 @@ const emitToUser = (userId: string, event: string, payload: Record<string, unkno
 };
 
 const clearCall = (callId: string) => {
+    const call = activeCalls.get(callId);
+    if (call?.timeout) {
+        clearTimeout(call.timeout);
+    }
     activeCalls.delete(callId);
 };
 
@@ -112,7 +118,7 @@ export const configureSocketServer = (server: HttpServer) => {
         socket.join(`user:${user.id}`);
 
         for (const call of activeCalls.values()) {
-            if (call.calleeId === user.id) {
+            if (call.calleeId === user.id && call.state === "ringing") {
                 emitToUser(user.id, "call:incoming", {
                     callId: call.id,
                     callerId: call.callerId,
@@ -142,6 +148,8 @@ export const configureSocketServer = (server: HttpServer) => {
                     calleeId: callee.id,
                     mode: payload.mode,
                     createdAt: Date.now(),
+                    state: "ringing",
+                    timeout: null,
                 });
 
                 await updateCallStatus(callLog.id, CALL_STATUS.RINGING);
@@ -173,14 +181,20 @@ export const configureSocketServer = (server: HttpServer) => {
                     ringing: true,
                 });
 
-                setTimeout(async () => {
-                    if (activeCalls.has(callLog.id)) {
+                const call = activeCalls.get(callLog.id);
+                if (call) {
+                    call.timeout = setTimeout(async () => {
+                        const activeCall = activeCalls.get(callLog.id);
+                        if (!activeCall || activeCall.state !== "ringing") {
+                            return;
+                        }
+
                         await updateCallStatus(callLog.id, CALL_STATUS.MISSED);
                         emitToUser(caller.id, "call:missed", { callId: callLog.id, calleeId: callee.id });
                         emitToUser(callee.id, "call:missed", { callId: callLog.id, callerId: caller.id });
                         clearCall(callLog.id);
-                    }
-                }, 45_000);
+                    }, 45_000);
+                }
             } catch (error) {
                 callback?.({
                     success: false,
@@ -195,6 +209,11 @@ export const configureSocketServer = (server: HttpServer) => {
                 return;
             }
 
+            if (call.timeout) {
+                clearTimeout(call.timeout);
+                call.timeout = null;
+            }
+            call.state = "answered";
             await updateCallStatus(call.id, CALL_STATUS.ANSWERED);
             emitToUser(call.callerId, "call:accepted", {
                 callId: call.id,

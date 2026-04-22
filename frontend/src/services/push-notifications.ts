@@ -35,12 +35,28 @@ export async function registerDeviceForPushNotifications() {
   });
 }
 
+export async function initializeNotificationCategories() {
+  await Notifications.setNotificationCategoryAsync("incoming_call", [
+    {
+      identifier: "answer",
+      buttonTitle: "Answer",
+      options: { opensAppToForeground: true },
+    },
+    {
+      identifier: "decline",
+      buttonTitle: "Decline",
+      options: { isDestructive: true, opensAppToForeground: false },
+    },
+  ]);
+}
+
 export async function playIncomingCallNotification(name: string, mode: "audio" | "video") {
   await Notifications.scheduleNotificationAsync({
     content: {
       title: mode === "video" ? "Incoming video call" : "Incoming audio call",
       body: `${name} is calling you`,
       sound: "default",
+      categoryIdentifier: "incoming_call",
     },
     trigger: null,
   });

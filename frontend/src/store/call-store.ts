@@ -9,6 +9,7 @@ type CallState = {
   remoteStreamUrl: string | null;
   isMuted: boolean;
   isVideoEnabled: boolean;
+  isSpeakerOn: boolean;
   cameraFacing: "front" | "back";
   errorMessage: string | null;
   setIncomingCall: (call: CallSession | null) => void;
@@ -18,6 +19,7 @@ type CallState = {
   setRemoteStreamUrl: (url: string | null) => void;
   setMuted: (value: boolean) => void;
   setVideoEnabled: (value: boolean) => void;
+  setSpeakerOn: (value: boolean) => void;
   setCameraFacing: (value: "front" | "back") => void;
   setErrorMessage: (value: string | null) => void;
   reset: () => void;
@@ -31,6 +33,7 @@ const initialState = {
   remoteStreamUrl: null,
   isMuted: false,
   isVideoEnabled: true,
+  isSpeakerOn: false,
   cameraFacing: "front" as const,
   errorMessage: null,
 };
@@ -47,6 +50,7 @@ export const useCallStore = create<CallState>((set) => ({
   setRemoteStreamUrl: (remoteStreamUrl) => set({ remoteStreamUrl }),
   setMuted: (isMuted) => set({ isMuted }),
   setVideoEnabled: (isVideoEnabled) => set({ isVideoEnabled }),
+  setSpeakerOn: (isSpeakerOn) => set({ isSpeakerOn }),
   setCameraFacing: (cameraFacing) => set({ cameraFacing }),
   setErrorMessage: (errorMessage) => set({ errorMessage }),
   reset: () => set(initialState),

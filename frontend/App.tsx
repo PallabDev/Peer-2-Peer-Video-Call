@@ -15,6 +15,8 @@ import { useSocketBridge } from "./src/hooks/useSocketBridge";
 import { useThemePalette } from "./src/theme/useThemePalette";
 import { handleIncomingLink } from "./src/utils/linking";
 import { IncomingCallModal } from "./src/components/IncomingCallModal";
+import { initializeNotificationCategories } from "./src/services/push-notifications";
+import { callManager } from "./src/services/call-manager";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -50,6 +52,23 @@ export default function App() {
     void Linking.getInitialURL().then(processUrl);
     const subscription = Linking.addEventListener("url", (event) => {
       void processUrl(event.url);
+    });
+
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
+    void initializeNotificationCategories();
+  }, []);
+
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const actionId = response.actionIdentifier;
+      if (actionId === "answer") {
+        void callManager.acceptIncomingCall();
+      } else if (actionId === "decline") {
+        void callManager.declineIncomingCall();
+      }
     });
 
     return () => subscription.remove();

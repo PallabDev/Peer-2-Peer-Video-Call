@@ -5,6 +5,7 @@
     "scheme": "callie",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "plugins": [
@@ -14,7 +15,8 @@
           "defaultChannel": "calls"
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-font"
     ],
     "android": {
       "package": "com.callie.mobile",

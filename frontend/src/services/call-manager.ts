@@ -1,9 +1,11 @@
 import { mediaDevices, RTCPeerConnection, RTCIceCandidate, RTCSessionDescription } from "react-native-webrtc";
 import type { MediaStream } from "react-native-webrtc";
+import InCallManager from "react-native-incall-manager";
 import { socketService } from "./socket";
 import { useCallStore } from "../store/call-store";
 import type { CallMode, CallSession, Contact } from "../types/app";
 import { playIncomingCallNotification } from "./push-notifications";
+import { navigationRef } from "../navigation/navigationRef";
 
 const ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -15,6 +17,8 @@ class CallManager {
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
   private listenersAttached = false;
+  private audioSessionActive = false;
+  private speakerSyncTimeouts: ReturnType<typeof setTimeout>[] = [];
 
   attachSocket() {
     const socket = socketService.getSocket();
@@ -34,6 +38,7 @@ class CallManager {
       };
 
       useCallStore.getState().setIncomingCall(incomingCall);
+      InCallManager.startRingtone("_DEFAULT_", [0, 250, 250, 250], "playback", 30);
       await playIncomingCallNotification(incomingCall.remoteUserName, incomingCall.mode);
     });
 
@@ -43,6 +48,7 @@ class CallManager {
         return;
       }
 
+      InCallManager.stopRingback();
       await this.prepareLocalMedia(state.activeCall.mode);
       await this.createPeerConnection(state.activeCall, true);
       useCallStore.getState().setStatus("connecting");
@@ -156,6 +162,8 @@ class CallManager {
 
     useCallStore.getState().setActiveCall(activeCall);
     useCallStore.getState().setStatus("ringing");
+    useCallStore.getState().setSpeakerOn(mode === "video");
+    InCallManager.startRingback("_DEFAULT_");
     return activeCall;
   }
 
@@ -166,9 +174,11 @@ class CallManager {
       return;
     }
 
+    InCallManager.stopRingtone();
     useCallStore.getState().setActiveCall(incomingCall);
     useCallStore.getState().setIncomingCall(null);
     useCallStore.getState().setStatus("connecting");
+    useCallStore.getState().setSpeakerOn(incomingCall.mode === "video");
     await this.prepareLocalMedia(incomingCall.mode);
     await this.createPeerConnection(incomingCall, false);
     socket.emit("call:accept", { callId: incomingCall.callId });
@@ -181,6 +191,7 @@ class CallManager {
       return;
     }
 
+    InCallManager.stopRingtone();
     socket.emit("call:decline", { callId: incomingCall.callId });
     useCallStore.getState().setIncomingCall(null);
   }
@@ -222,6 +233,14 @@ class CallManager {
     useCallStore.getState().setVideoEnabled(videoTrack.enabled);
   }
 
+  async toggleSpeaker() {
+    const nextSpeakerState = !useCallStore.getState().isSpeakerOn;
+    useCallStore.getState().setSpeakerOn(nextSpeakerState);
+    if (this.audioSessionActive) {
+      this.syncSpeakerState(nextSpeakerState);
+    }
+  }
+
   switchCamera() {
     if (!this.localStream) {
       return;
@@ -238,16 +257,21 @@ class CallManager {
   }
 
   async reset() {
+    InCallManager.stopRingtone();
+    InCallManager.stopRingback();
     this.peerConnection?.close();
     this.peerConnection = null;
     this.remoteStream = null;
+    this.clearSpeakerSyncs();
 
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
       this.localStream = null;
     }
 
+    this.stopAudioSession();
     useCallStore.getState().reset();
+    this.navigateAwayFromCallScreen();
   }
 
   private async prepareLocalMedia(mode: CallMode) {
@@ -265,6 +289,7 @@ class CallManager {
       } : false,
     });
 
+    this.startAudioSession(mode);
     useCallStore.getState().setLocalStreamUrl(this.localStream.toURL());
     useCallStore.getState().setVideoEnabled(mode === "video");
   }
@@ -278,12 +303,16 @@ class CallManager {
     this.peerConnection = new RTCPeerConnection({
       iceServers: ICE_SERVERS,
     });
+    const peerConnection = this.peerConnection as RTCPeerConnection & {
+      onicecandidate: ((event: { candidate: RTCIceCandidate | null }) => void) | null;
+      ontrack: ((event: { streams: MediaStream[] }) => void) | null;
+    };
 
     this.localStream?.getTracks().forEach((track) => {
       this.peerConnection?.addTrack(track, this.localStream as MediaStream);
     });
 
-    this.peerConnection.onicecandidate = (event) => {
+    peerConnection.onicecandidate = (event: { candidate: RTCIceCandidate | null }) => {
       if (!event.candidate) {
         return;
       }
@@ -295,7 +324,7 @@ class CallManager {
       });
     };
 
-    this.peerConnection.ontrack = (event) => {
+    peerConnection.ontrack = (event: { streams: MediaStream[] }) => {
       const [stream] = event.streams;
       if (!stream) {
         return;
@@ -304,6 +333,7 @@ class CallManager {
       this.remoteStream = stream;
       useCallStore.getState().setRemoteStreamUrl(stream.toURL());
       useCallStore.getState().setStatus("connected");
+      this.syncSpeakerState(useCallStore.getState().isSpeakerOn);
     };
 
     if (createOffer) {
@@ -319,6 +349,80 @@ class CallManager {
         sdp: offer,
       });
     }
+  }
+
+  private startAudioSession(mode: CallMode) {
+    if (this.audioSessionActive) {
+      this.syncSpeakerState(useCallStore.getState().isSpeakerOn);
+      return;
+    }
+
+    InCallManager.start({ media: mode, auto: true });
+    this.audioSessionActive = true;
+
+    const shouldUseSpeaker = mode === "video" || useCallStore.getState().isSpeakerOn;
+    useCallStore.getState().setSpeakerOn(shouldUseSpeaker);
+    this.syncSpeakerState(shouldUseSpeaker);
+  }
+
+  private stopAudioSession() {
+    if (!this.audioSessionActive) {
+      return;
+    }
+
+    this.clearSpeakerSyncs();
+    InCallManager.stop();
+    this.audioSessionActive = false;
+  }
+
+  private applySpeakerState(enabled: boolean) {
+    if (enabled) {
+      InCallManager.setForceSpeakerphoneOn(true);
+      InCallManager.setSpeakerphoneOn(true);
+      void InCallManager.chooseAudioRoute("SPEAKER_PHONE");
+    } else {
+      InCallManager.setForceSpeakerphoneOn(false);
+      InCallManager.setSpeakerphoneOn(false);
+      void InCallManager.chooseAudioRoute("EARPIECE");
+    }
+    useCallStore.getState().setSpeakerOn(enabled);
+  }
+
+  private syncSpeakerState(enabled: boolean) {
+    this.clearSpeakerSyncs();
+    if (!this.audioSessionActive) {
+      return;
+    }
+
+    const syncDelays = [0, 250, 750, 1500];
+    syncDelays.forEach((delay) => {
+      const timeout = setTimeout(() => {
+        if (!this.audioSessionActive) {
+          return;
+        }
+
+        this.applySpeakerState(enabled);
+      }, delay);
+      this.speakerSyncTimeouts.push(timeout);
+    });
+  }
+
+  private clearSpeakerSyncs() {
+    this.speakerSyncTimeouts.forEach((timeout) => clearTimeout(timeout));
+    this.speakerSyncTimeouts = [];
+  }
+
+  private navigateAwayFromCallScreen() {
+    if (!navigationRef.isReady() || navigationRef.getCurrentRoute()?.name !== "Call") {
+      return;
+    }
+
+    if (navigationRef.canGoBack()) {
+      navigationRef.goBack();
+      return;
+    }
+
+    navigationRef.navigate("Home");
   }
 }
 
