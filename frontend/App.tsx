@@ -13,7 +13,7 @@ import { navigationRef } from "./src/navigation/navigationRef";
 import { useAuthStore } from "./src/store/auth-store";
 import { useSocketBridge } from "./src/hooks/useSocketBridge";
 import { useThemePalette } from "./src/theme/useThemePalette";
-import { handleIncomingLink } from "./src/utils/linking";
+import { flushPendingLink, handleIncomingLink } from "./src/utils/linking";
 import { IncomingCallModal } from "./src/components/IncomingCallModal";
 import { initializeNotificationCategories } from "./src/services/push-notifications";
 import { callManager } from "./src/services/call-manager";
@@ -79,6 +79,7 @@ export default function App() {
       <NavigationContainer
         ref={navigationRef}
         theme={colorScheme === "dark" ? DarkTheme : DefaultTheme}
+        onReady={flushPendingLink}
       >
         <StatusBar style={colorScheme === "dark" ? "light" : "dark"} />
         <AppNavigator />

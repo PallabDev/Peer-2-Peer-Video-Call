@@ -31,8 +31,6 @@ export function AppNavigator() {
         <>
           <Stack.Screen name="SignIn" component={SignInScreen} />
           <Stack.Screen name="SignUp" component={SignUpScreen} />
-          <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
-          <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
         </>
       ) : !isVerified ? (
         <Stack.Screen name="VerifyEmail" component={VerifyEmailScreen} />
@@ -45,6 +43,8 @@ export function AppNavigator() {
           <Stack.Screen name="Call" component={CallScreen} />
         </>
       )}
+      <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
+      <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
     </Stack.Navigator>
   );
 }
