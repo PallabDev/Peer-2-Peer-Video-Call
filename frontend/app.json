@@ -13,7 +13,8 @@
         {
           "defaultChannel": "calls"
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "android": {
       "package": "com.callie.mobile",
@@ -31,6 +32,7 @@
       }
     },
     "extra": {
+      "apiBaseUrl": "https://peer-2-peer-video-call.onrender.com",
       "eas": {
         "projectId": "e9514d43-89be-48b0-92e7-7a775c5e8f38"
       }

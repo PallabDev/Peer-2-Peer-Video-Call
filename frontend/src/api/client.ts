@@ -2,14 +2,29 @@ import Constants from "expo-constants";
 import type { ApiEnvelope } from "../types/app";
 import { sessionToken } from "../utils/session";
 
+const DEFAULT_PRODUCTION_API_URL = "https://peer-2-peer-video-call.onrender.com";
+
 const getBaseUrl = () => {
   const envUrl = process.env.EXPO_PUBLIC_API_URL;
   if (envUrl) {
     return envUrl;
   }
 
-  const hostUri = (Constants as { expoConfig?: { hostUri?: string; }; }).expoConfig?.hostUri?.split(":")[0];
-  return hostUri ? `http://${hostUri}:8080` : "http://localhost:8080";
+  const expoConfig = (Constants as {
+    expoConfig?: {
+      hostUri?: string;
+      extra?: {
+        apiBaseUrl?: string;
+      };
+    };
+  }).expoConfig;
+
+  const hostUri = expoConfig?.hostUri?.split(":")[0];
+  if (hostUri) {
+    return `http://${hostUri}:8080`;
+  }
+
+  return expoConfig?.extra?.apiBaseUrl ?? DEFAULT_PRODUCTION_API_URL;
 };
 
 export const API_BASE_URL = getBaseUrl();
