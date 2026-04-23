@@ -65,7 +65,11 @@ export default function App() {
     const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
       const actionId = response.actionIdentifier;
       if (actionId === "answer") {
-        void callManager.acceptIncomingCall();
+        void callManager.acceptIncomingCall().then(() => {
+          if (navigationRef.isReady()) {
+            navigationRef.navigate("Call");
+          }
+        });
       } else if (actionId === "decline") {
         void callManager.declineIncomingCall();
       }

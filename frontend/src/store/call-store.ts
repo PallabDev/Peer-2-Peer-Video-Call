@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { CallMode, CallSession } from "../types/app";
+import type { AudioRoute, BuiltInAudioRoute, CallMode, CallSession, ExternalAudioRoute } from "../types/app";
 
 type CallState = {
   incomingCall: CallSession | null;
@@ -9,7 +9,11 @@ type CallState = {
   remoteStreamUrl: string | null;
   isMuted: boolean;
   isVideoEnabled: boolean;
-  isSpeakerOn: boolean;
+  preferredBuiltInRoute: BuiltInAudioRoute;
+  preferredExternalRoute: ExternalAudioRoute | null;
+  activeAudioRoute: AudioRoute;
+  availableAudioRoutes: AudioRoute[];
+  bluetoothDeviceName: string | null;
   cameraFacing: "front" | "back";
   errorMessage: string | null;
   setIncomingCall: (call: CallSession | null) => void;
@@ -19,7 +23,11 @@ type CallState = {
   setRemoteStreamUrl: (url: string | null) => void;
   setMuted: (value: boolean) => void;
   setVideoEnabled: (value: boolean) => void;
-  setSpeakerOn: (value: boolean) => void;
+  setPreferredBuiltInRoute: (value: BuiltInAudioRoute) => void;
+  setPreferredExternalRoute: (value: ExternalAudioRoute | null) => void;
+  setActiveAudioRoute: (value: AudioRoute) => void;
+  setAvailableAudioRoutes: (value: AudioRoute[]) => void;
+  setBluetoothDeviceName: (value: string | null) => void;
   setCameraFacing: (value: "front" | "back") => void;
   setErrorMessage: (value: string | null) => void;
   reset: () => void;
@@ -33,7 +41,11 @@ const initialState = {
   remoteStreamUrl: null,
   isMuted: false,
   isVideoEnabled: true,
-  isSpeakerOn: false,
+  preferredBuiltInRoute: "EARPIECE" as const,
+  preferredExternalRoute: null,
+  activeAudioRoute: "NONE" as const,
+  availableAudioRoutes: [] as AudioRoute[],
+  bluetoothDeviceName: null,
   cameraFacing: "front" as const,
   errorMessage: null,
 };
@@ -50,7 +62,11 @@ export const useCallStore = create<CallState>((set) => ({
   setRemoteStreamUrl: (remoteStreamUrl) => set({ remoteStreamUrl }),
   setMuted: (isMuted) => set({ isMuted }),
   setVideoEnabled: (isVideoEnabled) => set({ isVideoEnabled }),
-  setSpeakerOn: (isSpeakerOn) => set({ isSpeakerOn }),
+  setPreferredBuiltInRoute: (preferredBuiltInRoute) => set({ preferredBuiltInRoute }),
+  setPreferredExternalRoute: (preferredExternalRoute) => set({ preferredExternalRoute }),
+  setActiveAudioRoute: (activeAudioRoute) => set({ activeAudioRoute }),
+  setAvailableAudioRoutes: (availableAudioRoutes) => set({ availableAudioRoutes }),
+  setBluetoothDeviceName: (bluetoothDeviceName) => set({ bluetoothDeviceName }),
   setCameraFacing: (cameraFacing) => set({ cameraFacing }),
   setErrorMessage: (errorMessage) => set({ errorMessage }),
   reset: () => set(initialState),

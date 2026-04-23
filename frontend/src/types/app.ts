@@ -1,6 +1,9 @@
 export type UserRole = "admin" | "user";
 export type AccessStatus = "pending" | "approved" | "denied";
 export type CallMode = "audio" | "video";
+export type AudioRoute = "SPEAKER_PHONE" | "EARPIECE" | "WIRED_HEADSET" | "BLUETOOTH" | "NONE";
+export type BuiltInAudioRoute = "SPEAKER_PHONE" | "EARPIECE";
+export type ExternalAudioRoute = "WIRED_HEADSET" | "BLUETOOTH";
 
 export type User = {
   id: string;

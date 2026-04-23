@@ -20,7 +20,10 @@ export async function registerDeviceForPushNotifications() {
     return;
   }
 
-  const projectId = Constants.expoConfig?.extra?.eas?.projectId as string | undefined;
+  const projectId =
+    (Constants as typeof Constants & { easConfig?: { projectId?: string } }).easConfig?.projectId ??
+    (Constants.expoConfig?.extra?.eas?.projectId as string | undefined);
+
   if (!projectId) {
     return;
   }

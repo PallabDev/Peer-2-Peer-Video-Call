@@ -1,10 +1,10 @@
 import { mediaDevices, RTCPeerConnection, RTCIceCandidate, RTCSessionDescription } from "react-native-webrtc";
 import type { MediaStream } from "react-native-webrtc";
 import InCallManager from "react-native-incall-manager";
-import { DeviceEventEmitter, type EmitterSubscription, Platform } from "react-native";
+import { DeviceEventEmitter, type EmitterSubscription, PermissionsAndroid, Platform } from "react-native";
 import { socketService } from "./socket";
 import { useCallStore } from "../store/call-store";
-import type { CallMode, CallSession, Contact } from "../types/app";
+import type { AudioRoute, BuiltInAudioRoute, CallMode, CallSession, Contact } from "../types/app";
 import { playIncomingCallNotification } from "./push-notifications";
 import { navigationRef } from "../navigation/navigationRef";
 
@@ -12,6 +12,7 @@ const ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
 ];
+const ANDROID_AUDIO_ROUTE_SYNC_DELAYS = [0, 250, 750, 1500, 3000, 5000];
 
 class CallManager {
   private peerConnection: RTCPeerConnection | null = null;
@@ -20,7 +21,7 @@ class CallManager {
   private listenersAttached = false;
   private audioSessionActive = false;
   private audioSessionMedia: CallMode | null = null;
-  private speakerSyncTimeouts: ReturnType<typeof setTimeout>[] = [];
+  private audioRouteSyncTimeouts: ReturnType<typeof setTimeout>[] = [];
   private routeChangeSubscription: EmitterSubscription | null = null;
 
   attachSocket() {
@@ -167,7 +168,9 @@ class CallManager {
 
     useCallStore.getState().setActiveCall(activeCall);
     useCallStore.getState().setStatus("ringing");
-    useCallStore.getState().setSpeakerOn(mode === "video");
+    useCallStore.getState().setPreferredBuiltInRoute(mode === "video" ? "SPEAKER_PHONE" : "EARPIECE");
+    useCallStore.getState().setPreferredExternalRoute(null);
+    useCallStore.getState().setActiveAudioRoute(mode === "video" ? "SPEAKER_PHONE" : "EARPIECE");
     InCallManager.startRingback("_DEFAULT_");
     return activeCall;
   }
@@ -183,7 +186,9 @@ class CallManager {
     useCallStore.getState().setActiveCall(incomingCall);
     useCallStore.getState().setIncomingCall(null);
     useCallStore.getState().setStatus("connecting");
-    useCallStore.getState().setSpeakerOn(incomingCall.mode === "video");
+    useCallStore.getState().setPreferredBuiltInRoute(incomingCall.mode === "video" ? "SPEAKER_PHONE" : "EARPIECE");
+    useCallStore.getState().setPreferredExternalRoute(null);
+    useCallStore.getState().setActiveAudioRoute(incomingCall.mode === "video" ? "SPEAKER_PHONE" : "EARPIECE");
     await this.prepareLocalMedia(incomingCall.mode);
     await this.createPeerConnection(incomingCall, false);
     socket.emit("call:accept", { callId: incomingCall.callId });
@@ -239,11 +244,40 @@ class CallManager {
   }
 
   async toggleSpeaker() {
-    const nextSpeakerState = !useCallStore.getState().isSpeakerOn;
+    const nextBuiltInRoute: BuiltInAudioRoute =
+      useCallStore.getState().preferredBuiltInRoute === "SPEAKER_PHONE" ? "EARPIECE" : "SPEAKER_PHONE";
     const activeCall = useCallStore.getState().activeCall;
-    useCallStore.getState().setSpeakerOn(nextSpeakerState);
+    useCallStore.getState().setPreferredBuiltInRoute(nextBuiltInRoute);
+    useCallStore.getState().setPreferredExternalRoute(null);
     if (this.audioSessionActive && activeCall) {
-      this.startAudioSession(activeCall.mode, nextSpeakerState);
+      this.startAudioSession(activeCall.mode, nextBuiltInRoute);
+    }
+  }
+
+  async selectAudioRoute(route: AudioRoute) {
+    const { activeCall, availableAudioRoutes } = useCallStore.getState();
+    if (!activeCall) {
+      return;
+    }
+
+    if (route === "SPEAKER_PHONE" || route === "EARPIECE") {
+      useCallStore.getState().setPreferredBuiltInRoute(route);
+      useCallStore.getState().setPreferredExternalRoute(null);
+      if (this.audioSessionActive) {
+        this.startAudioSession(activeCall.mode, route);
+      } else {
+        useCallStore.getState().setActiveAudioRoute(route);
+      }
+      return;
+    }
+
+    if ((route === "BLUETOOTH" || route === "WIRED_HEADSET") && availableAudioRoutes.includes(route)) {
+      useCallStore.getState().setPreferredExternalRoute(route);
+      if (this.audioSessionActive) {
+        this.syncPreferredAudioRoute(route);
+      } else {
+        useCallStore.getState().setActiveAudioRoute(route);
+      }
     }
   }
 
@@ -268,7 +302,7 @@ class CallManager {
     this.peerConnection?.close();
     this.peerConnection = null;
     this.remoteStream = null;
-    this.clearSpeakerSyncs();
+    this.clearAudioRouteSyncs();
 
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
@@ -285,6 +319,8 @@ class CallManager {
       return;
     }
 
+    await this.ensureBluetoothPermission();
+
     this.localStream = await mediaDevices.getUserMedia({
       audio: true,
       video: mode === "video" ? {
@@ -295,7 +331,7 @@ class CallManager {
       } : false,
     });
 
-    this.startAudioSession(mode, useCallStore.getState().isSpeakerOn);
+    this.startAudioSession(mode, useCallStore.getState().preferredBuiltInRoute);
     useCallStore.getState().setLocalStreamUrl(this.localStream.toURL());
     useCallStore.getState().setVideoEnabled(mode === "video");
   }
@@ -338,8 +374,11 @@ class CallManager {
 
       this.remoteStream = stream;
       useCallStore.getState().setRemoteStreamUrl(stream.toURL());
+      if (this.localStream) {
+        useCallStore.getState().setLocalStreamUrl(this.localStream.toURL());
+      }
       useCallStore.getState().setStatus("connected");
-      this.startAudioSession(activeCall.mode, useCallStore.getState().isSpeakerOn);
+      this.startAudioSession(activeCall.mode, useCallStore.getState().preferredBuiltInRoute);
     };
 
     if (createOffer) {
@@ -357,11 +396,11 @@ class CallManager {
     }
   }
 
-  private startAudioSession(callMode: CallMode, speakerEnabled: boolean) {
-    const desiredMedia = this.resolveAudioSessionMedia(callMode, speakerEnabled);
+  private startAudioSession(callMode: CallMode, preferredBuiltInRoute: BuiltInAudioRoute) {
+    const desiredMedia = this.resolveAudioSessionMedia(callMode, preferredBuiltInRoute);
 
     if (this.audioSessionActive && this.audioSessionMedia === desiredMedia) {
-      this.syncSpeakerState(speakerEnabled);
+      this.syncPreferredAudioRoute();
       return;
     }
 
@@ -369,12 +408,12 @@ class CallManager {
       this.stopAudioSession();
     }
 
-    InCallManager.start({ media: desiredMedia, auto: Platform.OS === "android" ? false : true });
+    // Android 10 relies strictly on auto=true to establish the background Telecom modes securely before WebRTC triggers.
+    InCallManager.start({ media: desiredMedia, auto: true });
     this.audioSessionActive = true;
     this.audioSessionMedia = desiredMedia;
 
-    useCallStore.getState().setSpeakerOn(speakerEnabled);
-    this.syncSpeakerState(speakerEnabled);
+    this.syncPreferredAudioRoute();
   }
 
   private stopAudioSession() {
@@ -382,55 +421,88 @@ class CallManager {
       return;
     }
 
-    this.clearSpeakerSyncs();
+    this.clearAudioRouteSyncs();
     InCallManager.stop();
     this.audioSessionActive = false;
     this.audioSessionMedia = null;
   }
 
-  private resolveAudioSessionMedia(callMode: CallMode, speakerEnabled: boolean): CallMode {
+  private resolveAudioSessionMedia(callMode: CallMode, preferredBuiltInRoute: BuiltInAudioRoute): CallMode {
     if (callMode === "video") {
       return "video";
     }
 
-    return speakerEnabled ? "video" : "audio";
+    return preferredBuiltInRoute === "SPEAKER_PHONE" ? "video" : "audio";
   }
 
-  private applySpeakerState(enabled: boolean) {
-    if (enabled) {
-      InCallManager.setForceSpeakerphoneOn(true);
-      InCallManager.setSpeakerphoneOn(true);
-      void InCallManager.chooseAudioRoute("SPEAKER_PHONE");
-    } else {
-      InCallManager.setForceSpeakerphoneOn(false);
-      InCallManager.setSpeakerphoneOn(false);
-      void InCallManager.chooseAudioRoute("EARPIECE");
+  private getDesiredAudioRoute(availableRoutes = useCallStore.getState().availableAudioRoutes): AudioRoute {
+    const { preferredBuiltInRoute, preferredExternalRoute } = useCallStore.getState();
+
+    if (preferredExternalRoute && availableRoutes.includes(preferredExternalRoute)) {
+      return preferredExternalRoute;
     }
-    useCallStore.getState().setSpeakerOn(enabled);
+
+    if (preferredBuiltInRoute === "EARPIECE" && availableRoutes.includes("EARPIECE")) {
+      return "EARPIECE";
+    }
+
+    return "SPEAKER_PHONE";
   }
 
-  private syncSpeakerState(enabled: boolean) {
-    this.clearSpeakerSyncs();
+  private applyAudioRoute(route: AudioRoute) {
+    switch (route) {
+      case "SPEAKER_PHONE":
+        InCallManager.setForceSpeakerphoneOn(true);
+        InCallManager.setSpeakerphoneOn(true);
+        void InCallManager.chooseAudioRoute("SPEAKER_PHONE");
+        break;
+      case "BLUETOOTH":
+        InCallManager.setForceSpeakerphoneOn(false);
+        void InCallManager.chooseAudioRoute("BLUETOOTH");
+        break;
+      case "WIRED_HEADSET":
+        InCallManager.setForceSpeakerphoneOn(false);
+        void InCallManager.chooseAudioRoute("WIRED_HEADSET");
+        break;
+      case "EARPIECE":
+      default:
+        InCallManager.setForceSpeakerphoneOn(false);
+        InCallManager.setSpeakerphoneOn(false);
+        void InCallManager.chooseAudioRoute("EARPIECE");
+        break;
+    }
+
+    useCallStore.getState().setActiveAudioRoute(route);
+  }
+
+  private syncPreferredAudioRoute(routeOverride?: AudioRoute) {
+    this.clearAudioRouteSyncs();
     if (!this.audioSessionActive) {
       return;
     }
 
-    const syncDelays = [0, 250, 750, 1500];
-    syncDelays.forEach((delay) => {
+    const { activeCall } = useCallStore.getState();
+    if (!activeCall) {
+      return;
+    }
+
+    const preferredRoute = routeOverride ?? this.getDesiredAudioRoute();
+
+    ANDROID_AUDIO_ROUTE_SYNC_DELAYS.forEach((delay) => {
       const timeout = setTimeout(() => {
         if (!this.audioSessionActive) {
           return;
         }
 
-        this.applySpeakerState(enabled);
+        this.applyAudioRoute(preferredRoute);
       }, delay);
-      this.speakerSyncTimeouts.push(timeout);
+      this.audioRouteSyncTimeouts.push(timeout);
     });
   }
 
-  private clearSpeakerSyncs() {
-    this.speakerSyncTimeouts.forEach((timeout) => clearTimeout(timeout));
-    this.speakerSyncTimeouts = [];
+  private clearAudioRouteSyncs() {
+    this.audioRouteSyncTimeouts.forEach((timeout) => clearTimeout(timeout));
+    this.audioRouteSyncTimeouts = [];
   }
 
   private attachAudioRouteListener() {
@@ -441,27 +513,28 @@ class CallManager {
     this.routeChangeSubscription = DeviceEventEmitter.addListener("onAudioDeviceChanged", (event: {
       availableAudioDeviceList?: string;
       selectedAudioDevice?: string;
+      bluetoothDeviceName?: string;
     }) => {
-      const selectedRoute = event.selectedAudioDevice;
+      const selectedRoute = this.parseAudioRoute(event.selectedAudioDevice);
       const availableRoutes = this.parseAvailableRoutes(event.availableAudioDeviceList);
-      const { activeCall, isSpeakerOn } = useCallStore.getState();
+      const bluetoothDeviceName = event.bluetoothDeviceName?.trim() || null;
+      const { activeCall, preferredExternalRoute } = useCallStore.getState();
+
+      useCallStore.getState().setAvailableAudioRoutes(availableRoutes);
+      useCallStore.getState().setActiveAudioRoute(selectedRoute);
+      useCallStore.getState().setBluetoothDeviceName(bluetoothDeviceName);
+
+      if (preferredExternalRoute && !availableRoutes.includes(preferredExternalRoute)) {
+        useCallStore.getState().setPreferredExternalRoute(null);
+      }
 
       if (!this.audioSessionActive || !activeCall) {
         return;
       }
 
-      if (isSpeakerOn && selectedRoute !== "SPEAKER_PHONE" && availableRoutes.includes("SPEAKER_PHONE")) {
-        this.syncSpeakerState(true);
-        return;
-      }
-
-      if (
-        !isSpeakerOn &&
-        activeCall.mode === "audio" &&
-        selectedRoute === "SPEAKER_PHONE" &&
-        availableRoutes.includes("EARPIECE")
-      ) {
-        this.syncSpeakerState(false);
+      const preferredRoute = this.getDesiredAudioRoute(availableRoutes);
+      if (selectedRoute !== preferredRoute) {
+        this.syncPreferredAudioRoute(preferredRoute);
       }
     });
   }
@@ -478,10 +551,44 @@ class CallManager {
 
     try {
       const parsed = JSON.parse(rawRoutes);
-      return Array.isArray(parsed) ? parsed.filter((route): route is string => typeof route === "string") : [];
+      return Array.isArray(parsed)
+        ? parsed
+            .map((route) => this.parseAudioRoute(route))
+            .filter((route): route is AudioRoute => route !== "NONE")
+        : [];
     } catch {
       return [];
     }
+  }
+
+  private parseAudioRoute(route?: string): AudioRoute {
+    switch (route) {
+      case "SPEAKER_PHONE":
+      case "EARPIECE":
+      case "WIRED_HEADSET":
+      case "BLUETOOTH":
+        return route;
+      default:
+        return "NONE";
+    }
+  }
+
+  private async ensureBluetoothPermission() {
+    if (Platform.OS !== "android" || Number(Platform.Version) < 31) {
+      return;
+    }
+
+    const bluetoothPermission = PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT;
+    if (!bluetoothPermission) {
+      return;
+    }
+
+    const hasPermission = await PermissionsAndroid.check(bluetoothPermission);
+    if (hasPermission) {
+      return;
+    }
+
+    await PermissionsAndroid.request(bluetoothPermission);
   }
 
   private navigateAwayFromCallScreen() {

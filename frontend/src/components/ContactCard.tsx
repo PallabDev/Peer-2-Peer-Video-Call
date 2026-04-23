@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, Text, View, useColorScheme } from "react-native";
+import { Feather } from "@expo/vector-icons";
 import { useThemePalette } from "../theme/useThemePalette";
 import type { Contact } from "../types/app";
 
@@ -34,10 +35,10 @@ export function ContactCard({ contact, onAudioPress, onVideoPress }: Props) {
       </View>
       <View style={styles.actions}>
         <Pressable onPress={() => void onAudioPress()} style={[styles.iconButton, { backgroundColor: palette.surfaceAlt }]}>
-          <Text style={{ color: palette.text }}>A</Text>
+          <Feather name="phone" size={20} color={palette.text} />
         </Pressable>
         <Pressable onPress={() => void onVideoPress()} style={[styles.iconButton, { backgroundColor: palette.primary }]}>
-          <Text style={{ color: "#ffffff" }}>V</Text>
+          <Feather name="video" size={20} color="#ffffff" />
         </Pressable>
       </View>
     </View>
@@ -47,15 +48,15 @@ export function ContactCard({ contact, onAudioPress, onVideoPress }: Props) {
 const styles = StyleSheet.create({
   card: {
     borderWidth: 1,
-    borderRadius: 24,
+    borderRadius: 20,
     padding: 16,
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 24,
-    elevation: 4,
+    gap: 16,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 3,
   },
   avatar: {
     width: 52,
