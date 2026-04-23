@@ -7,9 +7,10 @@ type Props = {
   contact: Contact;
   onAudioPress: () => void | Promise<void>;
   onVideoPress: () => void | Promise<void>;
+  disabled?: boolean;
 };
 
-export function ContactCard({ contact, onAudioPress, onVideoPress }: Props) {
+export function ContactCard({ contact, onAudioPress, onVideoPress, disabled = false }: Props) {
   const palette = useThemePalette(useColorScheme());
   const initials = `${contact.firstName[0] ?? ""}${contact.lastName?.[0] ?? ""}`.toUpperCase();
 
@@ -34,10 +35,26 @@ export function ContactCard({ contact, onAudioPress, onVideoPress }: Props) {
         <Text style={[styles.email, { color: palette.textMuted }]}>{contact.email}</Text>
       </View>
       <View style={styles.actions}>
-        <Pressable onPress={() => void onAudioPress()} style={[styles.iconButton, { backgroundColor: palette.surfaceAlt }]}>
+        <Pressable
+          disabled={disabled}
+          onPress={() => void onAudioPress()}
+          style={[
+            styles.iconButton,
+            { backgroundColor: palette.surfaceAlt },
+            disabled ? styles.iconButtonDisabled : null,
+          ]}
+        >
           <Feather name="phone" size={20} color={palette.text} />
         </Pressable>
-        <Pressable onPress={() => void onVideoPress()} style={[styles.iconButton, { backgroundColor: palette.primary }]}>
+        <Pressable
+          disabled={disabled}
+          onPress={() => void onVideoPress()}
+          style={[
+            styles.iconButton,
+            { backgroundColor: palette.primary },
+            disabled ? styles.iconButtonDisabled : null,
+          ]}
+        >
           <Feather name="video" size={20} color="#ffffff" />
         </Pressable>
       </View>
@@ -90,5 +107,8 @@ const styles = StyleSheet.create({
     borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
+  },
+  iconButtonDisabled: {
+    opacity: 0.55,
   },
 });

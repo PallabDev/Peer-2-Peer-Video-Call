@@ -10,14 +10,18 @@ import type { Contact } from "../types/app";
 import { ContactCard } from "../components/ContactCard";
 import { callManager } from "../services/call-manager";
 import type { RootStackParamList } from "../navigation/navigationRef";
+import { useCallStore } from "../store/call-store";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Home">;
 
 export function HomeScreen({ navigation }: Props) {
   const palette = useThemePalette(useColorScheme());
   const { user, logout } = useAuthStore();
+  const activeCall = useCallStore((state) => state.activeCall);
+  const incomingCall = useCallStore((state) => state.incomingCall);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [error, setError] = useState("");
+  const [startingCallFor, setStartingCallFor] = useState<string | null>(null);
 
   const loadContacts = async () => {
     try {
@@ -32,6 +36,25 @@ export function HomeScreen({ navigation }: Props) {
   useEffect(() => {
     void loadContacts();
   }, []);
+
+  const isCallLocked = Boolean(activeCall || incomingCall || startingCallFor);
+
+  const handleStartCall = async (contact: Contact, mode: "audio" | "video") => {
+    if (isCallLocked) {
+      return;
+    }
+
+    try {
+      setError("");
+      setStartingCallFor(`${contact.id}:${mode}`);
+      await callManager.startOutgoingCall(contact, mode);
+      navigation.navigate("Call");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Could not start ${mode} call.`);
+    } finally {
+      setStartingCallFor(null);
+    }
+  };
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: palette.background }}>
@@ -63,24 +86,9 @@ export function HomeScreen({ navigation }: Props) {
           <ContactCard
             key={contact.id}
             contact={contact}
-            onAudioPress={async () => {
-              try {
-                setError("");
-                await callManager.startOutgoingCall(contact, "audio");
-                navigation.navigate("Call");
-              } catch (err) {
-                setError(err instanceof Error ? err.message : "Could not start audio call.");
-              }
-            }}
-            onVideoPress={async () => {
-              try {
-                setError("");
-                await callManager.startOutgoingCall(contact, "video");
-                navigation.navigate("Call");
-              } catch (err) {
-                setError(err instanceof Error ? err.message : "Could not start video call.");
-              }
-            }}
+            disabled={isCallLocked}
+            onAudioPress={() => handleStartCall(contact, "audio")}
+            onVideoPress={() => handleStartCall(contact, "video")}
           />
         ))}
         {!contacts.length ? (
