@@ -5,7 +5,11 @@ import { DeviceEventEmitter, type EmitterSubscription, PermissionsAndroid, Platf
 import { socketService } from "./socket";
 import { useCallStore } from "../store/call-store";
 import type { AudioRoute, BuiltInAudioRoute, CallMode, CallSession, Contact } from "../types/app";
-import { cancelIncomingCallNotification, playIncomingCallNotification } from "./push-notifications";
+import {
+  cancelIncomingCallNotification,
+  playIncomingCallNotification,
+  playMissedCallNotification,
+} from "./push-notifications";
 import { navigationRef } from "../navigation/navigationRef";
 
 const ICE_SERVERS = [
@@ -79,7 +83,7 @@ class CallManager {
     socket.on("call:missed", async () => {
       const { incomingCall } = useCallStore.getState();
       if (incomingCall) {
-        await cancelIncomingCallNotification(incomingCall.callId);
+        await playMissedCallNotification(incomingCall);
       }
       useCallStore.getState().setErrorMessage("Call timed out");
       await this.reset();
@@ -88,7 +92,7 @@ class CallManager {
     socket.on("call:cancelled", async () => {
       const { incomingCall } = useCallStore.getState();
       if (incomingCall) {
-        await cancelIncomingCallNotification(incomingCall.callId);
+        await playMissedCallNotification(incomingCall);
       }
       await this.reset();
     });
@@ -493,12 +497,10 @@ class CallManager {
         break;
       case "BLUETOOTH":
         void InCallManager.requestAudioFocus();
-        InCallManager.setForceSpeakerphoneOn(false);
         void InCallManager.chooseAudioRoute("BLUETOOTH");
         break;
       case "WIRED_HEADSET":
         void InCallManager.requestAudioFocus();
-        InCallManager.setForceSpeakerphoneOn(false);
         void InCallManager.chooseAudioRoute("WIRED_HEADSET");
         break;
       case "EARPIECE":

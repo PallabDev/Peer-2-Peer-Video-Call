@@ -7,6 +7,7 @@ import type { CallMode, CallSession } from "../types/app";
 
 export const INCOMING_CALL_CATEGORY = "incoming_call";
 export const INCOMING_CALL_CHANNEL = "calls";
+export const MISSED_CALL_CHANNEL = "missed_calls";
 export const ANSWER_CALL_ACTION = "answer";
 export const DECLINE_CALL_ACTION = "decline";
 
@@ -67,6 +68,14 @@ export async function initializeNotificationCategories() {
         contentType: Notifications.AndroidAudioContentType.SONIFICATION,
       },
     });
+
+    await Notifications.setNotificationChannelAsync(MISSED_CALL_CHANNEL, {
+      name: "Missed calls",
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: "default",
+      vibrationPattern: [0, 250],
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    });
   }
 
   await Notifications.setNotificationCategoryAsync(INCOMING_CALL_CATEGORY, [
@@ -85,6 +94,10 @@ export async function initializeNotificationCategories() {
 
 export function getIncomingCallNotificationId(callId: string) {
   return `incoming-call-${callId}`;
+}
+
+export function getMissedCallNotificationId(callId: string) {
+  return `missed-call-${callId}`;
 }
 
 export function parseIncomingCallNotification(data?: IncomingCallNotificationData): CallSession | null {
@@ -115,8 +128,42 @@ export function parseIncomingCallNotification(data?: IncomingCallNotificationDat
 }
 
 export async function cancelIncomingCallNotification(callId: string) {
-  await Notifications.dismissNotificationAsync(getIncomingCallNotificationId(callId)).catch(() => undefined);
+  const ids = new Set([getIncomingCallNotificationId(callId)]);
+  const presentedNotifications = await Notifications.getPresentedNotificationsAsync().catch(() => []);
+
+  presentedNotifications.forEach((notification) => {
+    if (notification.request.content.data?.callId === callId) {
+      ids.add(notification.request.identifier);
+    }
+  });
+
+  await Promise.all(
+    [...ids].map((id) => Notifications.dismissNotificationAsync(id).catch(() => undefined)),
+  );
   await Notifications.cancelScheduledNotificationAsync(getIncomingCallNotificationId(callId)).catch(() => undefined);
+}
+
+export async function playMissedCallNotification(call: CallSession) {
+  await cancelIncomingCallNotification(call.callId);
+  await Notifications.scheduleNotificationAsync({
+    identifier: getMissedCallNotificationId(call.callId),
+    content: {
+      title: call.mode === "video" ? "Missed video call" : "Missed audio call",
+      body: `${call.remoteUserName} called you`,
+      sound: "default",
+      data: {
+        type: "missed-call",
+        callId: call.callId,
+        callerId: call.remoteUserId,
+        callerName: call.remoteUserName,
+        mode: call.mode,
+      },
+      priority: Notifications.AndroidNotificationPriority.HIGH,
+      autoDismiss: true,
+      interruptionLevel: "active",
+    },
+    trigger: Platform.OS === "android" ? { channelId: MISSED_CALL_CHANNEL } : null,
+  });
 }
 
 export async function playIncomingCallNotification(call: CallSession) {

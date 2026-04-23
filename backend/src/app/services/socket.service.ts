@@ -81,6 +81,31 @@ const clearCall = (callId: string) => {
     activeCalls.delete(callId);
 };
 
+const sendMissedCallPush = async (call: ActiveCall) => {
+    if (isOnline(call.calleeId)) {
+        return;
+    }
+
+    const callee = await getUserById(call.calleeId);
+    if (!callee.expoPushToken) {
+        return;
+    }
+
+    await sendExpoPushNotification({
+        to: callee.expoPushToken,
+        title: call.mode === "video" ? "Missed video call" : "Missed audio call",
+        body: `${call.callerName} called you on Callie`,
+        data: {
+            type: "missed-call",
+            callId: call.id,
+            callerId: call.callerId,
+            callerName: call.callerName,
+            mode: call.mode,
+        },
+        channelId: "missed_calls",
+    });
+};
+
 const ensureSocketUser = async (socket: Socket) => {
     const rawToken = socket.handshake.auth.token || socket.handshake.headers.authorization?.replace("Bearer ", "");
     if (!rawToken || typeof rawToken !== "string") {
@@ -258,6 +283,7 @@ export const configureSocketServer = (server: HttpServer) => {
                         await updateCallStatus(callLog.id, CALL_STATUS.MISSED);
                         emitToUser(caller.id, "call:missed", { callId: callLog.id, calleeId: callee.id });
                         emitToUser(callee.id, "call:missed", { callId: callLog.id, callerId: caller.id });
+                        await sendMissedCallPush(activeCall);
                         clearCall(callLog.id);
                     }, 45_000);
                 }
@@ -307,6 +333,7 @@ export const configureSocketServer = (server: HttpServer) => {
 
             await updateCallStatus(call.id, CALL_STATUS.CANCELLED);
             emitToUser(call.calleeId, "call:cancelled", { callId: call.id, byUserId: user.id });
+            await sendMissedCallPush(call);
             clearCall(call.id);
         });
 
