@@ -8,6 +8,7 @@ import { ResetPasswordScreen } from "../screens/ResetPasswordScreen";
 import { VerifyEmailScreen } from "../screens/VerifyEmailScreen";
 import { AccessDeniedScreen } from "../screens/AccessDeniedScreen";
 import { HomeScreen } from "../screens/HomeScreen";
+import { SettingsScreen } from "../screens/SettingsScreen";
 import { AdminScreen } from "../screens/AdminScreen";
 import { CallScreen } from "../screens/CallScreen";
 import type { RootStackParamList } from "./navigationRef";
@@ -39,6 +40,7 @@ export function AppNavigator() {
       ) : (
         <>
           <Stack.Screen name="Home" component={HomeScreen} />
+          <Stack.Screen name="Settings" component={SettingsScreen} />
           <Stack.Screen name="Admin" component={AdminScreen} />
           <Stack.Screen name="Call" component={CallScreen} />
         </>

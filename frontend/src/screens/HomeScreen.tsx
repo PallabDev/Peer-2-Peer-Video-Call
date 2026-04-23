@@ -65,6 +65,9 @@ export function HomeScreen({ navigation }: Props) {
         </View>
 
         <View style={styles.headerActions}>
+          <Pressable onPress={() => navigation.navigate("Settings")} style={styles.actionIcon}>
+            <Feather name="lock" size={20} color={palette.textMuted} />
+          </Pressable>
           {user?.role === "admin" ? (
             <Pressable onPress={() => navigation.navigate("Admin")} style={styles.actionIcon}>
               <Feather name="settings" size={20} color={palette.textMuted} />

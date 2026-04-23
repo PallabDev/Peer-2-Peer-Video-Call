@@ -1,72 +1,23 @@
 import { mediaDevices, RTCPeerConnection, RTCIceCandidate, RTCSessionDescription } from "react-native-webrtc";
 import type { MediaStream } from "react-native-webrtc";
 import InCallManager from "react-native-incall-manager";
-import { DeviceEventEmitter, type EmitterSubscription, PermissionsAndroid, Platform } from "react-native";
+import { Alert, DeviceEventEmitter, type EmitterSubscription, PermissionsAndroid, Platform } from "react-native";
 import { socketService } from "./socket";
 import { useCallStore } from "../store/call-store";
-import type { AudioRoute, BuiltInAudioRoute, CallMode, CallSession, Contact } from "../types/app";
+import type { AudioRoute, BuiltInAudioRoute, CallIdentityProof, CallMode, CallSession, Contact } from "../types/app";
 import {
   cancelIncomingCallNotification,
   playMissedCallNotification,
 } from "./push-notifications";
 import { navigationRef } from "../navigation/navigationRef";
+import { useAuthStore } from "../store/auth-store";
+import { buildCallIdentityProof, verifyRemoteCallIdentity } from "./call-identity";
 
 const ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
 ];
 const ANDROID_AUDIO_ROUTE_SYNC_DELAYS = [0, 250, 750, 1500, 3000, 5000];
-const SECURE_SDP_MARKERS = ["a=fingerprint:", "a=ice-ufrag:", "a=ice-pwd:"];
-
-type WireSdp = {
-  type: "offer" | "answer" | "pranswer" | "rollback";
-  sdp: string;
-};
-
-function hasSecureSdpMarkers(sdp?: string | null) {
-  if (!sdp || typeof sdp !== "string") {
-    return false;
-  }
-
-  return SECURE_SDP_MARKERS.every((marker) => sdp.includes(marker));
-}
-
-function isWireSdp(value: unknown): value is WireSdp {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  const type = candidate.type;
-  const sdp = candidate.sdp;
-
-  if (type !== "offer" && type !== "answer" && type !== "pranswer" && type !== "rollback") {
-    return false;
-  }
-
-  return typeof sdp === "string" && sdp.length > 0 && sdp.length < 40_000 && hasSecureSdpMarkers(sdp);
-}
-
-function isWireIceCandidate(value: unknown): value is { candidate: string; sdpMid?: string; sdpMLineIndex?: number } {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  if (typeof candidate.candidate !== "string" || candidate.candidate.length === 0 || candidate.candidate.length > 4000) {
-    return false;
-  }
-
-  if (candidate.sdpMid !== undefined && typeof candidate.sdpMid !== "string") {
-    return false;
-  }
-
-  if (candidate.sdpMLineIndex !== undefined && typeof candidate.sdpMLineIndex !== "number") {
-    return false;
-  }
-
-  return true;
-}
 
 class CallManager {
   private peerConnection: RTCPeerConnection | null = null;
@@ -156,7 +107,12 @@ class CallManager {
       await this.reset();
     });
 
-    socket.on("webrtc:offer", async (payload: { callId: string; fromUserId: string; sdp: any; }) => {
+    socket.on("webrtc:offer", async (payload: {
+      callId: string;
+      fromUserId: string;
+      sdp: any;
+      identity?: CallIdentityProof;
+    }) => {
       const activeCall = useCallStore.getState().activeCall;
       if (!activeCall || activeCall.callId !== payload.callId) {
         return;
@@ -167,10 +123,13 @@ class CallManager {
         await this.createPeerConnection(activeCall, false);
       }
 
-      if (!isWireSdp(payload.sdp)) {
-        useCallStore.getState().setErrorMessage("Rejected insecure call offer.");
-        useCallStore.getState().setEncryptionStatus("unverified");
-        await this.reset();
+      const isVerified = await this.verifyRemoteIdentity({
+        callId: payload.callId,
+        remoteUserId: payload.fromUserId,
+        sdp: payload.sdp,
+        identity: payload.identity,
+      });
+      if (!isVerified) {
         return;
       }
 
@@ -179,42 +138,47 @@ class CallManager {
       if (!answer) {
         return;
       }
-      if (!hasSecureSdpMarkers(answer.sdp)) {
-        useCallStore.getState().setErrorMessage("Could not establish a secure media session.");
-        useCallStore.getState().setEncryptionStatus("unverified");
-        await this.reset();
-        return;
-      }
 
       await this.peerConnection?.setLocalDescription(answer);
+      const identity = await this.buildLocalIdentityProof(activeCall.callId, answer.sdp ?? "");
+      if (!identity) {
+        return;
+      }
       socket.emit("webrtc:answer", {
         callId: activeCall.callId,
         toUserId: payload.fromUserId,
         sdp: answer,
+        identity,
       });
       this.setCallStatus("connecting");
     });
 
-    socket.on("webrtc:answer", async (payload: { callId: string; sdp: any; }) => {
+    socket.on("webrtc:answer", async (payload: {
+      callId: string;
+      sdp: any;
+      identity?: CallIdentityProof;
+    }) => {
       const activeCall = useCallStore.getState().activeCall;
       if (!activeCall || activeCall.callId !== payload.callId) {
         return;
       }
 
-      if (!isWireSdp(payload.sdp)) {
-        useCallStore.getState().setErrorMessage("Rejected insecure call answer.");
-        useCallStore.getState().setEncryptionStatus("unverified");
-        await this.reset();
+      const isVerified = await this.verifyRemoteIdentity({
+        callId: payload.callId,
+        remoteUserId: activeCall.remoteUserId,
+        sdp: payload.sdp,
+        identity: payload.identity,
+      });
+      if (!isVerified) {
         return;
       }
 
       await this.peerConnection?.setRemoteDescription(new RTCSessionDescription(payload.sdp));
       this.setCallStatus("connected");
-      void this.verifyEncryptionState();
     });
 
     socket.on("webrtc:ice-candidate", async (payload: { candidate: any; }) => {
-      if (!this.peerConnection || !isWireIceCandidate(payload.candidate)) {
+      if (!this.peerConnection || !payload.candidate) {
         return;
       }
 
@@ -277,6 +241,7 @@ class CallManager {
 
     useCallStore.getState().setActiveCall(activeCall);
     useCallStore.getState().setEncryptionStatus("unknown");
+    useCallStore.getState().setErrorMessage(null);
     this.setCallStatus("ringing");
     this.applyDefaultAudioPreferences(mode);
     InCallManager.startRingback("_DEFAULT_");
@@ -303,8 +268,9 @@ class CallManager {
     await cancelIncomingCallNotification(incomingCall.callId);
     useCallStore.getState().setActiveCall(incomingCall);
     useCallStore.getState().setIncomingCall(null);
-    this.setCallStatus("connecting");
     useCallStore.getState().setEncryptionStatus("unknown");
+    useCallStore.getState().setErrorMessage(null);
+    this.setCallStatus("connecting");
     this.applyDefaultAudioPreferences(incomingCall.mode);
     await this.prepareLocalMedia(incomingCall.mode);
     await this.createPeerConnection(incomingCall, false);
@@ -515,7 +481,6 @@ class CallManager {
         useCallStore.getState().setLocalStreamUrl(this.localStream.toURL());
       }
       this.setCallStatus("connected");
-      void this.verifyEncryptionState();
       this.startAudioSession(activeCall.mode, useCallStore.getState().preferredBuiltInRoute);
     };
 
@@ -526,7 +491,6 @@ class CallManager {
 
       if (connectionState === "connected") {
         this.setCallStatus("connected");
-        void this.verifyEncryptionState();
         return;
       }
 
@@ -543,7 +507,6 @@ class CallManager {
 
       if (iceConnectionState === "connected" || iceConnectionState === "completed") {
         this.setCallStatus("connected");
-        void this.verifyEncryptionState();
       } else if (iceConnectionState === "checking" || iceConnectionState === "new") {
         this.setCallStatus("connecting");
       } else if (iceConnectionState === "failed" || iceConnectionState === "disconnected") {
@@ -556,48 +519,91 @@ class CallManager {
         offerToReceiveAudio: true,
         offerToReceiveVideo: activeCall.mode === "video",
       });
-      if (!hasSecureSdpMarkers(offer.sdp)) {
-        throw new Error("Unable to generate secure SDP offer.");
-      }
 
       await this.peerConnection.setLocalDescription(offer);
+      const identity = await this.buildLocalIdentityProof(activeCall.callId, offer.sdp ?? "");
+      if (!identity) {
+        return;
+      }
       socket.emit("webrtc:offer", {
         callId: activeCall.callId,
         toUserId: activeCall.remoteUserId,
         sdp: offer,
+        identity,
       });
     }
   }
 
-  private async verifyEncryptionState() {
-    const localSdp = this.peerConnection?.localDescription?.sdp;
-    const remoteSdp = this.peerConnection?.remoteDescription?.sdp;
-    const negotiatedFingerprint = hasSecureSdpMarkers(localSdp) && hasSecureSdpMarkers(remoteSdp);
+  private async buildLocalIdentityProof(callId: string, sdp: string) {
+    try {
+      const localUser = useAuthStore.getState().user;
+      if (!localUser || !sdp) {
+        throw new Error("You must be signed in with a valid call description to build a device proof.");
+      }
 
-    if (!negotiatedFingerprint) {
-      useCallStore.getState().setEncryptionStatus("unverified");
-      useCallStore.getState().setErrorMessage("Secure fingerprint negotiation missing.");
-      return;
+      return await buildCallIdentityProof(localUser.id, callId, sdp);
+    } catch (error) {
+      await this.handleSecurityFailure(
+        error instanceof Error ? error.message : "The app could not sign this call securely.",
+      );
+      return null;
+    }
+  }
+
+  private async verifyRemoteIdentity(input: {
+    callId: string;
+    remoteUserId: string;
+    sdp: { sdp?: string } | undefined;
+    identity?: CallIdentityProof;
+  }) {
+    const localUser = useAuthStore.getState().user;
+    const activeCall = useCallStore.getState().activeCall;
+
+    if (!localUser || !activeCall || !input.sdp?.sdp) {
+      await this.handleSecurityFailure("The call security check could not run correctly.");
+      return false;
     }
 
     try {
-      const stats = await this.peerConnection?.getStats();
-      if (!stats) {
-        useCallStore.getState().setEncryptionStatus("unknown");
-        return;
-      }
-
-      let hasSecureTransport = false;
-      (stats as any).forEach((report: any) => {
-        if (report?.type === "transport" && (report.dtlsState === "connected" || report.dtlsState === "closed")) {
-          hasSecureTransport = true;
-        }
+      const result = await verifyRemoteCallIdentity({
+        localUserId: localUser.id,
+        remoteUserId: input.remoteUserId,
+        callId: input.callId,
+        sdp: input.sdp.sdp,
+        proof: input.identity ?? null,
       });
 
-      useCallStore.getState().setEncryptionStatus(hasSecureTransport ? "verified" : "unknown");
-    } catch {
-      useCallStore.getState().setEncryptionStatus("unknown");
+      useCallStore.getState().setEncryptionStatus(result.status);
+      if (result.status !== "verified") {
+        await this.handleSecurityFailure(result.reason ?? "The device identity check failed.");
+        return false;
+      }
+
+      useCallStore.getState().setErrorMessage(null);
+      return true;
+    } catch (error) {
+      await this.handleSecurityFailure(
+        error instanceof Error ? error.message : "The device identity check failed.",
+      );
+      return false;
     }
+  }
+
+  private async handleSecurityFailure(message: string) {
+    const activeCall = useCallStore.getState().activeCall;
+    const socket = socketService.getSocket();
+
+    useCallStore.getState().setEncryptionStatus("unverified");
+    useCallStore.getState().setErrorMessage(message);
+
+    if (activeCall && socket) {
+      socket.emit(activeCall.direction === "incoming" ? "call:decline" : "call:end", {
+        callId: activeCall.callId,
+      });
+    }
+
+    Alert.alert("Security check failed", message);
+    await this.reset();
   }
 
   private startAudioSession(callMode: CallMode, preferredBuiltInRoute: BuiltInAudioRoute) {

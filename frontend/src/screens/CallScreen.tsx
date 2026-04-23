@@ -292,24 +292,27 @@ export function CallScreen() {
               <RTCView
                 key={`local-${localStreamUrl}-${cameraFacing}`}
                 streamURL={localStreamUrl}
-                style={StyleSheet.absoluteFillObject}
+                style={styles.localRtcView}
                 objectFit="cover"
                 mirror={cameraFacing === "front"}
-                zOrder={2}
+                zOrder={1}
               />
             </View>
-            <View style={styles.pipBadge}>
-              <Text style={styles.pipBadgeText}>{cameraFacing === "front" ? "Front" : "Back"}</Text>
+            <View style={styles.localPreviewOverlay} pointerEvents="box-none">
+              <View style={styles.pipBadge}>
+                <Text style={styles.pipBadgeText}>{cameraFacing === "front" ? "Front" : "Back"}</Text>
+              </View>
+              <Pressable
+                style={styles.pipSwapButton}
+                onPress={() => {
+                  resetControlsTimeout();
+                  callManager.switchCamera();
+                }}
+                hitSlop={10}
+              >
+                <Feather name="refresh-cw" size={18} color="#ffffff" />
+              </Pressable>
             </View>
-            <Pressable
-              style={styles.pipSwapButton}
-              onPress={() => {
-                resetControlsTimeout();
-                callManager.switchCamera();
-              }}
-            >
-              <Feather name="refresh-cw" size={18} color="#ffffff" />
-            </Pressable>
           </Animated.View>
         ) : null}
 
@@ -329,10 +332,12 @@ export function CallScreen() {
                 ]}
               >
                 {encryptionStatus === "verified"
-                  ? "Encrypted call verified"
+                  ? "Verified device key"
                   : encryptionStatus === "unverified"
-                    ? "Encryption check failed"
-                    : "Verifying encryption..."}
+                    ? "Security key mismatch"
+                    : status === "connected"
+                      ? "Checking device key..."
+                      : "Negotiating secure media..."}
               </Text>
             </View>
 
@@ -468,11 +473,22 @@ const styles = StyleSheet.create({
     shadowRadius: 20,
     elevation: 8,
     zIndex: 4,
+    overflow: "hidden",
   },
   localPreviewFrame: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     borderRadius: 24,
     overflow: "hidden",
+    zIndex: 1,
+  },
+  localRtcView: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 24,
+  },
+  localPreviewOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 3,
+    elevation: 12,
   },
   pipBadge: {
     position: "absolute",
@@ -482,6 +498,8 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 999,
     backgroundColor: "rgba(15, 23, 42, 0.72)",
+    zIndex: 4,
+    elevation: 13,
   },
   pipBadgeText: {
     color: "#ffffff",
@@ -495,6 +513,8 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.52)",
     padding: 8,
     borderRadius: 16,
+    zIndex: 5,
+    elevation: 14,
   },
   toolbar: {
     position: "absolute",

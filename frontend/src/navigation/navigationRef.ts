@@ -8,6 +8,7 @@ export type RootStackParamList = {
   VerifyEmail: undefined;
   AccessDenied: undefined;
   Home: undefined;
+  Settings: undefined;
   Admin: undefined;
   Call: undefined;
 };

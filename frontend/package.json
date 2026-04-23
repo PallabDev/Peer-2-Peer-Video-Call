@@ -18,10 +18,12 @@
     "babel-preset-expo": "~55.0.8",
     "expo": "~55.0.17",
     "expo-constants": "~55.0.15",
+    "expo-crypto": "~55.0.14",
     "expo-dev-client": "~55.0.28",
     "expo-device": "~55.0.15",
     "expo-font": "~55.0.6",
     "expo-linking": "~55.0.14",
+    "expo-local-authentication": "~55.0.13",
     "expo-notifications": "~55.0.20",
     "expo-secure-store": "~55.0.13",
     "expo-status-bar": "~55.0.5",
@@ -34,6 +36,8 @@
     "react-native-screens": "~4.23.0",
     "react-native-webrtc": "^124.0.7",
     "socket.io-client": "^4.8.1",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
     "zustand": "^5.0.8"
   },
   "devDependencies": {

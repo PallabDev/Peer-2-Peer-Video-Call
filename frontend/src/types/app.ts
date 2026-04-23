@@ -33,3 +33,11 @@ export type CallSession = {
   mode: CallMode;
   direction: "incoming" | "outgoing";
 };
+
+export type CallIdentityProof = {
+  version: 1;
+  publicKey: string;
+  signature: string;
+  fingerprintAlgorithm: string;
+  fingerprint: string;
+};

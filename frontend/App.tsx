@@ -16,6 +16,9 @@ import { useThemePalette } from "./src/theme/useThemePalette";
 import { flushPendingLink, handleIncomingLink } from "./src/utils/linking";
 import { IncomingCallModal } from "./src/components/IncomingCallModal";
 import { OngoingCallBanner } from "./src/components/OngoingCallBanner";
+import { AppLockOverlay } from "./src/components/AppLockOverlay";
+import { LoadingScreen } from "./src/screens/LoadingScreen";
+import { useAppLockStore } from "./src/store/app-lock-store";
 import {
   ANSWER_CALL_ACTION,
   DECLINE_CALL_ACTION,
@@ -35,7 +38,7 @@ Notifications.setNotificationHandler({
       shouldShowBanner: !shouldSuppressForegroundIncoming,
       shouldShowList: !shouldSuppressForegroundIncoming,
       shouldPlaySound: !shouldSuppressForegroundIncoming,
-    shouldSetBadge: false,
+      shouldSetBadge: false,
     });
   },
 });
@@ -44,12 +47,23 @@ export default function App() {
   const colorScheme = useColorScheme();
   const palette = useThemePalette(colorScheme);
   const bootstrap = useAuthStore((state) => state.bootstrap);
+  const authLoading = useAuthStore((state) => state.loading);
+  const user = useAuthStore((state) => state.user);
+  const bootstrapAppLock = useAppLockStore((state) => state.bootstrap);
+  const lockApp = useAppLockStore((state) => state.lock);
+  const appLockLoading = useAppLockStore((state) => state.loading);
+  const appLockEnabled = useAppLockStore((state) => state.enabled);
+  const appLocked = useAppLockStore((state) => state.isLocked);
   const [currentRoute, setCurrentRoute] = useState<keyof RootStackParamList | null>(null);
   useSocketBridge();
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  useEffect(() => {
+    void bootstrapAppLock(user?.id ?? null);
+  }, [bootstrapAppLock, user?.id]);
 
   useEffect(() => {
     void SystemUI.setBackgroundColorAsync(palette.background);
@@ -77,11 +91,16 @@ export default function App() {
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
+      const previousState = currentAppState;
       currentAppState = nextState;
+
+      if (previousState === "active" && (nextState === "inactive" || nextState === "background")) {
+        lockApp();
+      }
     });
 
     return () => subscription.remove();
-  }, []);
+  }, [lockApp]);
 
   useEffect(() => {
     const handleNotificationResponse = (response: Notifications.NotificationResponse | null) => {
@@ -119,6 +138,10 @@ export default function App() {
     return () => subscription.remove();
   }, []);
 
+  if (authLoading || (user && appLockLoading)) {
+    return <LoadingScreen />;
+  }
+
   return (
     <SafeAreaProvider>
       <NavigationContainer
@@ -136,6 +159,7 @@ export default function App() {
         <AppNavigator />
         <IncomingCallModal />
         <OngoingCallBanner currentRoute={currentRoute} />
+        <AppLockOverlay visible={Boolean(user && appLockEnabled && appLocked)} />
       </NavigationContainer>
     </SafeAreaProvider>
   );

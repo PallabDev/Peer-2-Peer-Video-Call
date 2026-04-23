@@ -9,7 +9,8 @@ type Props = {
   placeholder: string;
   secureTextEntry?: boolean;
   autoCapitalize?: "none" | "words" | "sentences" | "characters";
-  keyboardType?: "default" | "email-address";
+  keyboardType?: "default" | "email-address" | "number-pad";
+  maxLength?: number;
 };
 
 export function FormInput(props: Props) {
@@ -26,6 +27,7 @@ export function FormInput(props: Props) {
         secureTextEntry={props.secureTextEntry}
         autoCapitalize={props.autoCapitalize ?? "none"}
         keyboardType={props.keyboardType}
+        maxLength={props.maxLength}
         style={[
           styles.input,
           {
