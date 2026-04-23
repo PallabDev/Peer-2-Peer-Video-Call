@@ -16,12 +16,15 @@ type ActiveCall = {
     createdAt: number;
     state: "ringing" | "answered";
     timeout: NodeJS.Timeout | null;
+    pushFallbackTimeout: NodeJS.Timeout | null;
 };
 
 const userSockets = new Map<string, Set<string>>();
 const activeCalls = new Map<string, ActiveCall>();
+const initiatingCallers = new Set<string>();
 
 let io: Server | null = null;
+const SECURE_SDP_MARKERS = ["a=fingerprint:", "a=ice-ufrag:", "a=ice-pwd:"];
 
 const addSocket = (userId: string, socketId: string) => {
     const sockets = userSockets.get(userId) ?? new Set<string>();
@@ -77,6 +80,9 @@ const clearCall = (callId: string) => {
     const call = activeCalls.get(callId);
     if (call?.timeout) {
         clearTimeout(call.timeout);
+    }
+    if (call?.pushFallbackTimeout) {
+        clearTimeout(call.pushFallbackTimeout);
     }
     activeCalls.delete(callId);
 };
@@ -149,6 +155,35 @@ const relayWebRtcMessage = (
             return;
         }
 
+        if (eventName === "webrtc:ice-candidate") {
+            const candidate = payload.candidate as Record<string, unknown> | undefined;
+            const isValidCandidate = Boolean(
+                candidate
+                && typeof candidate.candidate === "string"
+                && candidate.candidate.length > 0
+                && candidate.candidate.length < 4000
+                && (candidate.sdpMid === undefined || typeof candidate.sdpMid === "string")
+                && (candidate.sdpMLineIndex === undefined || typeof candidate.sdpMLineIndex === "number"),
+            );
+
+            if (!isValidCandidate) {
+                return;
+            }
+        } else {
+            const sdp = payload.sdp as Record<string, unknown> | undefined;
+            const rawSdp = sdp?.sdp;
+            const type = sdp?.type;
+            const isSupportedType = type === "offer" || type === "answer" || type === "pranswer" || type === "rollback";
+            const hasSecureMarkers = typeof rawSdp === "string"
+                && rawSdp.length > 0
+                && rawSdp.length < 40_000
+                && SECURE_SDP_MARKERS.every((marker) => rawSdp.includes(marker));
+
+            if (!isSupportedType || !hasSecureMarkers) {
+                return;
+            }
+        }
+
         emitToUser(payload.toUserId, eventName, {
             ...payload,
             fromUserId: senderId,
@@ -202,6 +237,17 @@ export const configureSocketServer = (server: HttpServer) => {
                     throw new ApiError(400, "You cannot call yourself.");
                 }
 
+                if (initiatingCallers.has(user.id)) {
+                    callback?.({
+                        success: false,
+                        code: "CALL_ALREADY_STARTING",
+                        message: "A call is already being started.",
+                    });
+                    return;
+                }
+
+                initiatingCallers.add(user.id);
+
                 const caller = await assertCallableUser(user.id);
                 const callee = await assertCallableUser(payload.toUserId);
                 const callerActiveCall = findActiveCallForUser(caller.id);
@@ -238,6 +284,7 @@ export const configureSocketServer = (server: HttpServer) => {
                     createdAt: Date.now(),
                     state: "ringing",
                     timeout: null,
+                    pushFallbackTimeout: null,
                 });
 
                 await updateCallStatus(callLog.id, CALL_STATUS.RINGING);
@@ -249,23 +296,6 @@ export const configureSocketServer = (server: HttpServer) => {
                     mode: payload.mode,
                 });
 
-                if (!isOnline(callee.id) && callee.expoPushToken) {
-                    await sendExpoPushNotification({
-                        to: callee.expoPushToken,
-                        title: payload.mode === "video" ? "Incoming video call" : "Incoming audio call",
-                        body: `${caller.firstName} is calling you on Callie`,
-                        data: {
-                            type: "incoming-call",
-                            callId: callLog.id,
-                            callerId: caller.id,
-                            callerName: `${caller.firstName}${caller.lastName ? ` ${caller.lastName}` : ""}`.trim(),
-                            mode: payload.mode,
-                        },
-                        categoryId: "incoming_call",
-                        channelId: "calls",
-                    });
-                }
-
                 callback?.({
                     success: true,
                     callId: callLog.id,
@@ -274,6 +304,33 @@ export const configureSocketServer = (server: HttpServer) => {
 
                 const call = activeCalls.get(callLog.id);
                 if (call) {
+                    call.pushFallbackTimeout = setTimeout(async () => {
+                        const activeCall = activeCalls.get(callLog.id);
+                        if (!activeCall || activeCall.state !== "ringing") {
+                            return;
+                        }
+
+                        const latestCallee = await getUserById(callee.id);
+                        if (!latestCallee.expoPushToken) {
+                            return;
+                        }
+
+                        await sendExpoPushNotification({
+                            to: latestCallee.expoPushToken,
+                            title: payload.mode === "video" ? "Incoming video call" : "Incoming audio call",
+                            body: `${caller.firstName} is calling you on Callie`,
+                            data: {
+                                type: "incoming-call",
+                                callId: callLog.id,
+                                callerId: caller.id,
+                                callerName: `${caller.firstName}${caller.lastName ? ` ${caller.lastName}` : ""}`.trim(),
+                                mode: payload.mode,
+                            },
+                            categoryId: "incoming_call",
+                            channelId: "calls",
+                        });
+                    }, 1500);
+
                     call.timeout = setTimeout(async () => {
                         const activeCall = activeCalls.get(callLog.id);
                         if (!activeCall || activeCall.state !== "ringing") {
@@ -292,6 +349,8 @@ export const configureSocketServer = (server: HttpServer) => {
                     success: false,
                     message: error instanceof Error ? error.message : "Could not initiate call.",
                 });
+            } finally {
+                initiatingCallers.delete(user.id);
             }
         });
 

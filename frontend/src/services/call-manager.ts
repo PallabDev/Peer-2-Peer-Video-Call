@@ -7,7 +7,6 @@ import { useCallStore } from "../store/call-store";
 import type { AudioRoute, BuiltInAudioRoute, CallMode, CallSession, Contact } from "../types/app";
 import {
   cancelIncomingCallNotification,
-  playIncomingCallNotification,
   playMissedCallNotification,
 } from "./push-notifications";
 import { navigationRef } from "../navigation/navigationRef";
@@ -17,6 +16,57 @@ const ICE_SERVERS = [
   { urls: "stun:stun1.l.google.com:19302" },
 ];
 const ANDROID_AUDIO_ROUTE_SYNC_DELAYS = [0, 250, 750, 1500, 3000, 5000];
+const SECURE_SDP_MARKERS = ["a=fingerprint:", "a=ice-ufrag:", "a=ice-pwd:"];
+
+type WireSdp = {
+  type: "offer" | "answer" | "pranswer" | "rollback";
+  sdp: string;
+};
+
+function hasSecureSdpMarkers(sdp?: string | null) {
+  if (!sdp || typeof sdp !== "string") {
+    return false;
+  }
+
+  return SECURE_SDP_MARKERS.every((marker) => sdp.includes(marker));
+}
+
+function isWireSdp(value: unknown): value is WireSdp {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const type = candidate.type;
+  const sdp = candidate.sdp;
+
+  if (type !== "offer" && type !== "answer" && type !== "pranswer" && type !== "rollback") {
+    return false;
+  }
+
+  return typeof sdp === "string" && sdp.length > 0 && sdp.length < 40_000 && hasSecureSdpMarkers(sdp);
+}
+
+function isWireIceCandidate(value: unknown): value is { candidate: string; sdpMid?: string; sdpMLineIndex?: number } {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.candidate !== "string" || candidate.candidate.length === 0 || candidate.candidate.length > 4000) {
+    return false;
+  }
+
+  if (candidate.sdpMid !== undefined && typeof candidate.sdpMid !== "string") {
+    return false;
+  }
+
+  if (candidate.sdpMLineIndex !== undefined && typeof candidate.sdpMLineIndex !== "number") {
+    return false;
+  }
+
+  return true;
+}
 
 class CallManager {
   private peerConnection: RTCPeerConnection | null = null;
@@ -27,6 +77,7 @@ class CallManager {
   private audioSessionMedia: CallMode | null = null;
   private audioRouteSyncTimeouts: ReturnType<typeof setTimeout>[] = [];
   private routeChangeSubscription: EmitterSubscription | null = null;
+  private outgoingCallPending = false;
 
   attachSocket() {
     const socket = socketService.getSocket();
@@ -38,6 +89,11 @@ class CallManager {
     this.attachAudioRouteListener();
 
     socket.on("call:incoming", async (payload: { callId: string; callerId: string; callerName?: string; mode: CallMode; }) => {
+      const state = useCallStore.getState();
+      if (state.activeCall?.callId === payload.callId || state.incomingCall?.callId === payload.callId) {
+        return;
+      }
+
       const incomingCall: CallSession = {
         callId: payload.callId,
         remoteUserId: payload.callerId,
@@ -48,7 +104,6 @@ class CallManager {
 
       useCallStore.getState().setIncomingCall(incomingCall);
       InCallManager.startRingtone("_DEFAULT_", [0, 250, 250, 250], "playback", 30);
-      await playIncomingCallNotification(incomingCall);
     });
 
     socket.on("call:busy", (payload: { calleeId?: string; }) => {
@@ -68,7 +123,7 @@ class CallManager {
       InCallManager.stopRingback();
       await this.prepareLocalMedia(state.activeCall.mode);
       await this.createPeerConnection(state.activeCall, true);
-      useCallStore.getState().setStatus("connecting");
+      this.setCallStatus("connecting");
     });
 
     socket.on("call:declined", async () => {
@@ -112,9 +167,22 @@ class CallManager {
         await this.createPeerConnection(activeCall, false);
       }
 
+      if (!isWireSdp(payload.sdp)) {
+        useCallStore.getState().setErrorMessage("Rejected insecure call offer.");
+        useCallStore.getState().setEncryptionStatus("unverified");
+        await this.reset();
+        return;
+      }
+
       await this.peerConnection?.setRemoteDescription(new RTCSessionDescription(payload.sdp));
       const answer = await this.peerConnection?.createAnswer();
       if (!answer) {
+        return;
+      }
+      if (!hasSecureSdpMarkers(answer.sdp)) {
+        useCallStore.getState().setErrorMessage("Could not establish a secure media session.");
+        useCallStore.getState().setEncryptionStatus("unverified");
+        await this.reset();
         return;
       }
 
@@ -124,7 +192,7 @@ class CallManager {
         toUserId: payload.fromUserId,
         sdp: answer,
       });
-      useCallStore.getState().setStatus("connecting");
+      this.setCallStatus("connecting");
     });
 
     socket.on("webrtc:answer", async (payload: { callId: string; sdp: any; }) => {
@@ -133,12 +201,20 @@ class CallManager {
         return;
       }
 
+      if (!isWireSdp(payload.sdp)) {
+        useCallStore.getState().setErrorMessage("Rejected insecure call answer.");
+        useCallStore.getState().setEncryptionStatus("unverified");
+        await this.reset();
+        return;
+      }
+
       await this.peerConnection?.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-      useCallStore.getState().setStatus("connected");
+      this.setCallStatus("connected");
+      void this.verifyEncryptionState();
     });
 
     socket.on("webrtc:ice-candidate", async (payload: { candidate: any; }) => {
-      if (!this.peerConnection || !payload.candidate) {
+      if (!this.peerConnection || !isWireIceCandidate(payload.candidate)) {
         return;
       }
 
@@ -167,16 +243,24 @@ class CallManager {
   }
 
   async startOutgoingCall(contact: Contact, mode: CallMode) {
+    const state = useCallStore.getState();
+    if (this.outgoingCallPending || state.activeCall || state.incomingCall) {
+      throw new Error("A call is already in progress.");
+    }
+
     const socket = socketService.getSocket();
     if (!socket) {
       throw new Error("Socket is not connected");
     }
 
+    this.outgoingCallPending = true;
     const response = await new Promise<{ success: boolean; callId?: string; message?: string; }>((resolve) => {
       socket.emit("call:initiate", {
         toUserId: contact.id,
         mode,
       }, resolve);
+    }).finally(() => {
+      this.outgoingCallPending = false;
     });
 
     if (!response.success || !response.callId) {
@@ -192,7 +276,8 @@ class CallManager {
     };
 
     useCallStore.getState().setActiveCall(activeCall);
-    useCallStore.getState().setStatus("ringing");
+    useCallStore.getState().setEncryptionStatus("unknown");
+    this.setCallStatus("ringing");
     this.applyDefaultAudioPreferences(mode);
     InCallManager.startRingback("_DEFAULT_");
     return activeCall;
@@ -218,7 +303,8 @@ class CallManager {
     await cancelIncomingCallNotification(incomingCall.callId);
     useCallStore.getState().setActiveCall(incomingCall);
     useCallStore.getState().setIncomingCall(null);
-    useCallStore.getState().setStatus("connecting");
+    this.setCallStatus("connecting");
+    useCallStore.getState().setEncryptionStatus("unknown");
     this.applyDefaultAudioPreferences(incomingCall.mode);
     await this.prepareLocalMedia(incomingCall.mode);
     await this.createPeerConnection(incomingCall, false);
@@ -242,7 +328,10 @@ class CallManager {
     const activeCall = useCallStore.getState().activeCall;
     const socket = socketService.getSocket();
     if (activeCall && socket) {
-      socket.emit("call:end", { callId: activeCall.callId });
+      const currentStatus = useCallStore.getState().status;
+      socket.emit(currentStatus === "ringing" && activeCall.direction === "outgoing" ? "call:cancel" : "call:end", {
+        callId: activeCall.callId,
+      });
     }
     await this.reset();
   }
@@ -356,10 +445,22 @@ class CallManager {
     this.localStream = await mediaDevices.getUserMedia({
       audio: true,
       video: mode === "video" ? {
-        facingMode: "user",
-        frameRate: 30,
-        width: 1280,
-        height: 720,
+        facingMode: useCallStore.getState().cameraFacing === "back" ? "environment" : "user",
+        frameRate: {
+          min: 10,
+          ideal: 15,
+          max: 20,
+        },
+        width: {
+          min: 320,
+          ideal: 640,
+          max: 960,
+        },
+        height: {
+          min: 180,
+          ideal: 360,
+          max: 540,
+        },
       } : false,
     });
 
@@ -380,11 +481,15 @@ class CallManager {
     const peerConnection = this.peerConnection as RTCPeerConnection & {
       onicecandidate: ((event: { candidate: RTCIceCandidate | null }) => void) | null;
       ontrack: ((event: { streams: MediaStream[] }) => void) | null;
+      onconnectionstatechange: (() => void) | null;
+      oniceconnectionstatechange: (() => void) | null;
     };
 
     this.localStream?.getTracks().forEach((track) => {
       this.peerConnection?.addTrack(track, this.localStream as MediaStream);
     });
+
+    this.optimizeSendersForLowBandwidth(activeCall.mode);
 
     peerConnection.onicecandidate = (event: { candidate: RTCIceCandidate | null }) => {
       if (!event.candidate) {
@@ -409,8 +514,41 @@ class CallManager {
       if (this.localStream) {
         useCallStore.getState().setLocalStreamUrl(this.localStream.toURL());
       }
-      useCallStore.getState().setStatus("connected");
+      this.setCallStatus("connected");
+      void this.verifyEncryptionState();
       this.startAudioSession(activeCall.mode, useCallStore.getState().preferredBuiltInRoute);
+    };
+
+    peerConnection.onconnectionstatechange = () => {
+      const connectionState = (this.peerConnection as RTCPeerConnection & {
+        connectionState?: string;
+      })?.connectionState;
+
+      if (connectionState === "connected") {
+        this.setCallStatus("connected");
+        void this.verifyEncryptionState();
+        return;
+      }
+
+      if (connectionState === "failed" || connectionState === "disconnected") {
+        useCallStore.getState().setErrorMessage("Call connection dropped.");
+        void this.reset();
+      }
+    };
+
+    peerConnection.oniceconnectionstatechange = () => {
+      const iceConnectionState = (this.peerConnection as RTCPeerConnection & {
+        iceConnectionState?: string;
+      })?.iceConnectionState;
+
+      if (iceConnectionState === "connected" || iceConnectionState === "completed") {
+        this.setCallStatus("connected");
+        void this.verifyEncryptionState();
+      } else if (iceConnectionState === "checking" || iceConnectionState === "new") {
+        this.setCallStatus("connecting");
+      } else if (iceConnectionState === "failed" || iceConnectionState === "disconnected") {
+        useCallStore.getState().setErrorMessage("Call connection dropped.");
+      }
     };
 
     if (createOffer) {
@@ -418,6 +556,9 @@ class CallManager {
         offerToReceiveAudio: true,
         offerToReceiveVideo: activeCall.mode === "video",
       });
+      if (!hasSecureSdpMarkers(offer.sdp)) {
+        throw new Error("Unable to generate secure SDP offer.");
+      }
 
       await this.peerConnection.setLocalDescription(offer);
       socket.emit("webrtc:offer", {
@@ -425,6 +566,37 @@ class CallManager {
         toUserId: activeCall.remoteUserId,
         sdp: offer,
       });
+    }
+  }
+
+  private async verifyEncryptionState() {
+    const localSdp = this.peerConnection?.localDescription?.sdp;
+    const remoteSdp = this.peerConnection?.remoteDescription?.sdp;
+    const negotiatedFingerprint = hasSecureSdpMarkers(localSdp) && hasSecureSdpMarkers(remoteSdp);
+
+    if (!negotiatedFingerprint) {
+      useCallStore.getState().setEncryptionStatus("unverified");
+      useCallStore.getState().setErrorMessage("Secure fingerprint negotiation missing.");
+      return;
+    }
+
+    try {
+      const stats = await this.peerConnection?.getStats();
+      if (!stats) {
+        useCallStore.getState().setEncryptionStatus("unknown");
+        return;
+      }
+
+      let hasSecureTransport = false;
+      (stats as any).forEach((report: any) => {
+        if (report?.type === "transport" && (report.dtlsState === "connected" || report.dtlsState === "closed")) {
+          hasSecureTransport = true;
+        }
+      });
+
+      useCallStore.getState().setEncryptionStatus(hasSecureTransport ? "verified" : "unknown");
+    } catch {
+      useCallStore.getState().setEncryptionStatus("unknown");
     }
   }
 
@@ -610,6 +782,66 @@ class CallManager {
       default:
         return "NONE";
     }
+  }
+
+  private optimizeSendersForLowBandwidth(mode: CallMode) {
+    if (!this.peerConnection) {
+      return;
+    }
+
+    this.peerConnection.getSenders().forEach((sender) => {
+      const track = sender.track;
+      if (!track) {
+        return;
+      }
+
+      if (track.kind === "audio") {
+        const parameters = sender.getParameters() as any;
+
+        void (sender as any).setParameters({
+          ...parameters,
+          encodings: [
+            {
+              ...(parameters.encodings?.[0] ?? {}),
+              active: true,
+              maxBitrate: 48_000,
+            },
+          ],
+        }).catch(() => undefined);
+        return;
+      }
+
+      if (track.kind === "video" && mode === "video") {
+        const parameters = sender.getParameters() as any;
+        const encoding = parameters.encodings?.[0] ?? {};
+
+        void (sender as any).setParameters({
+          ...parameters,
+          degradationPreference: "maintain-framerate",
+          encodings: [
+            {
+              ...encoding,
+              active: true,
+              maxBitrate: 350_000,
+              maxFramerate: 15,
+              scaleResolutionDownBy: 1,
+            },
+          ],
+        }).catch(() => undefined);
+      }
+    });
+  }
+
+  private setCallStatus(status: "ringing" | "incoming" | "connecting" | "connected" | "ended" | "error" | "idle") {
+    const currentStatus = useCallStore.getState().status;
+    if (
+      currentStatus === "connected" &&
+      (status === "incoming" || status === "ringing" || status === "connecting")
+    ) {
+      return;
+    }
+
+    useCallStore.getState().setStatus(status);
   }
 
   private async ensureBluetoothPermission() {

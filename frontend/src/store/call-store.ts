@@ -16,6 +16,7 @@ type CallState = {
   bluetoothDeviceName: string | null;
   cameraFacing: "front" | "back";
   errorMessage: string | null;
+  encryptionStatus: "unknown" | "verified" | "unverified";
   setIncomingCall: (call: CallSession | null) => void;
   setActiveCall: (call: CallSession | null) => void;
   setStatus: (status: CallState["status"]) => void;
@@ -30,6 +31,7 @@ type CallState = {
   setBluetoothDeviceName: (value: string | null) => void;
   setCameraFacing: (value: "front" | "back") => void;
   setErrorMessage: (value: string | null) => void;
+  setEncryptionStatus: (value: CallState["encryptionStatus"]) => void;
   reset: () => void;
 };
 
@@ -48,15 +50,19 @@ const initialState = {
   bluetoothDeviceName: null,
   cameraFacing: "front" as const,
   errorMessage: null,
+  encryptionStatus: "unknown" as const,
 };
 
 export const useCallStore = create<CallState>((set) => ({
   ...initialState,
-  setIncomingCall: (call) => set({
+  setIncomingCall: (call) => set((state) => ({
     incomingCall: call,
-    status: call ? "incoming" : "idle",
-  }),
-  setActiveCall: (call) => set({ activeCall: call }),
+    status: call ? "incoming" : state.activeCall ? state.status : "idle",
+  })),
+  setActiveCall: (call) => set((state) => ({
+    activeCall: call,
+    status: call ? state.status : state.incomingCall ? "incoming" : "idle",
+  })),
   setStatus: (status) => set({ status }),
   setLocalStreamUrl: (localStreamUrl) => set({ localStreamUrl }),
   setRemoteStreamUrl: (remoteStreamUrl) => set({ remoteStreamUrl }),
@@ -69,5 +75,6 @@ export const useCallStore = create<CallState>((set) => ({
   setBluetoothDeviceName: (bluetoothDeviceName) => set({ bluetoothDeviceName }),
   setCameraFacing: (cameraFacing) => set({ cameraFacing }),
   setErrorMessage: (errorMessage) => set({ errorMessage }),
+  setEncryptionStatus: (encryptionStatus) => set({ encryptionStatus }),
   reset: () => set(initialState),
 }));

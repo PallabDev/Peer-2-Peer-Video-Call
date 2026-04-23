@@ -1,6 +1,15 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Feather } from "@expo/vector-icons";
-import { Pressable, StyleSheet, Text, View, useColorScheme, Animated, PanResponder } from "react-native";
+import {
+  Animated,
+  PanResponder,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useColorScheme,
+  useWindowDimensions,
+} from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { RTCView } from "react-native-webrtc";
 import { useCallStore } from "../store/call-store";
@@ -9,11 +18,28 @@ import { useThemePalette } from "../theme/useThemePalette";
 import { navigationRef } from "../navigation/navigationRef";
 import type { AudioRoute } from "../types/app";
 
+const PREVIEW_WIDTH = 120;
+const PREVIEW_HEIGHT = 170;
+const PREVIEW_MARGIN = 16;
+const BOTTOM_SAFE_ZONE = 136;
+
 type ControlButtonProps = {
   icon: keyof typeof Feather.glyphMap;
   onPress: () => void;
   active?: boolean;
   danger?: boolean;
+};
+
+type Point = {
+  x: number;
+  y: number;
+};
+
+type Bounds = {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
 };
 
 function ControlButton({ icon, onPress, active = false, danger = false }: ControlButtonProps) {
@@ -33,21 +59,6 @@ function ControlButton({ icon, onPress, active = false, danger = false }: Contro
       />
     </Pressable>
   );
-}
-
-function getAudioRouteLabel(route: AudioRoute, bluetoothDeviceName: string | null) {
-  switch (route) {
-    case "BLUETOOTH":
-      return bluetoothDeviceName || "Bluetooth audio";
-    case "WIRED_HEADSET":
-      return "Headset audio";
-    case "SPEAKER_PHONE":
-      return "Speaker audio";
-    case "EARPIECE":
-      return "Phone audio";
-    default:
-      return "Connecting audio";
-  }
 }
 
 function getAudioButtonIcon(route: AudioRoute): keyof typeof Feather.glyphMap {
@@ -78,6 +89,44 @@ function getAudioRouteOptions(availableRoutes: AudioRoute[], bluetoothDeviceName
   return options;
 }
 
+function getFirstName(name: string) {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return "Call";
+  }
+
+  return trimmed.split(/\s+/)[0] ?? trimmed;
+}
+
+function getStatusLabel(status: string, direction: "incoming" | "outgoing") {
+  switch (status) {
+    case "ringing":
+      return direction === "outgoing" ? "Calling..." : "Ringing...";
+    case "incoming":
+      return "Incoming call";
+    case "connecting":
+      return "Connecting...";
+    case "connected":
+      return "Connected";
+    case "ended":
+      return "Call ended";
+    case "error":
+      return "Connection issue";
+    default:
+      return "Preparing call";
+  }
+}
+
+function clampPoint(point: Point, bounds: Bounds, fallback: Point) {
+  const safeX = Number.isFinite(point.x) ? point.x : fallback.x;
+  const safeY = Number.isFinite(point.y) ? point.y : fallback.y;
+
+  return {
+    x: Math.min(Math.max(safeX, bounds.minX), bounds.maxX),
+    y: Math.min(Math.max(safeY, bounds.minY), bounds.maxY),
+  };
+}
+
 export function CallScreen() {
   const palette = useThemePalette(useColorScheme());
   const {
@@ -92,34 +141,73 @@ export function CallScreen() {
     bluetoothDeviceName,
     cameraFacing,
     errorMessage,
+    encryptionStatus,
   } = useCallStore();
 
   const insets = useSafeAreaInsets();
-
+  const { width, height } = useWindowDimensions();
   const [showControls, setShowControls] = useState(true);
   const [showAudioRouteMenu, setShowAudioRouteMenu] = useState(false);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
-  const pipPanResponder = useRef(
-    PanResponder.create({
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => {
-        pan.setOffset({
-          x: (pan.x as any)._value,
-          y: (pan.y as any)._value
-        });
-        pan.setValue({ x: 0, y: 0 });
-      },
-      onPanResponderMove: Animated.event(
-        [null, { dx: pan.x, dy: pan.y }],
-        { useNativeDriver: false }
-      ),
-      onPanResponderRelease: () => {
-        pan.flattenOffset();
-      }
-    })
-  ).current;
+  const previewBounds = useMemo<Bounds>(() => {
+    const minX = PREVIEW_MARGIN;
+    const minY = Math.max(insets.top + 12, PREVIEW_MARGIN);
+    const maxX = Math.max(minX, width - PREVIEW_WIDTH - PREVIEW_MARGIN);
+    const maxY = Math.max(
+      minY,
+      height - PREVIEW_HEIGHT - Math.max(insets.bottom + BOTTOM_SAFE_ZONE, 110),
+    );
+
+    return { minX, maxX, minY, maxY };
+  }, [height, insets.bottom, insets.top, width]);
+
+  const defaultPreviewPosition = useMemo<Point>(() => ({
+    x: previewBounds.maxX,
+    y: previewBounds.maxY,
+  }), [previewBounds.maxX, previewBounds.maxY]);
+
+  const pan = useRef(new Animated.ValueXY(defaultPreviewPosition)).current;
+  const previewPositionRef = useRef<Point>(defaultPreviewPosition);
+  const previewStartRef = useRef<Point>(defaultPreviewPosition);
+  const previewBoundsRef = useRef<Bounds>(previewBounds);
+  const defaultPreviewPositionRef = useRef<Point>(defaultPreviewPosition);
+
+  useEffect(() => {
+    previewBoundsRef.current = previewBounds;
+    defaultPreviewPositionRef.current = defaultPreviewPosition;
+    const next = clampPoint(previewPositionRef.current, previewBounds, defaultPreviewPosition);
+    previewPositionRef.current = next;
+    pan.setValue(next);
+  }, [defaultPreviewPosition, pan, previewBounds]);
+
+  const pipPanResponder = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 2 || Math.abs(gesture.dy) > 2,
+    onPanResponderGrant: () => {
+      previewStartRef.current = previewPositionRef.current;
+    },
+    onPanResponderMove: (_, gesture) => {
+      const next = clampPoint({
+        x: previewStartRef.current.x + gesture.dx,
+        y: previewStartRef.current.y + gesture.dy,
+      }, previewBoundsRef.current, defaultPreviewPositionRef.current);
+
+      pan.setValue(next);
+    },
+    onPanResponderRelease: (_, gesture) => {
+      const next = clampPoint({
+        x: previewStartRef.current.x + gesture.dx,
+        y: previewStartRef.current.y + gesture.dy,
+      }, previewBoundsRef.current, defaultPreviewPositionRef.current);
+
+      previewPositionRef.current = next;
+      Animated.spring(pan, {
+        toValue: next,
+        useNativeDriver: false,
+        bounciness: 5,
+      }).start();
+    },
+  }), [pan]);
 
   const resetControlsTimeout = useCallback(() => {
     setShowControls(true);
@@ -172,6 +260,9 @@ export function CallScreen() {
     return <SafeAreaView style={[styles.safeArea, { backgroundColor: "#040811" }]} />;
   }
 
+  const firstName = getFirstName(activeCall.remoteUserName);
+  const statusLabel = errorMessage ?? getStatusLabel(status, activeCall.direction);
+
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: "#040811" }]}>
       <View style={styles.fill}>
@@ -185,9 +276,8 @@ export function CallScreen() {
           />
         ) : (
           <View style={styles.placeholder}>
-            <Text style={styles.name}>{activeCall.remoteUserName}</Text>
-            <Text style={styles.status}>{errorMessage ?? status}</Text>
-            <Text style={styles.securityNote}>Padlock \uD83D\uDD12 End-to-End Encrypted</Text>
+            <Text style={styles.name}>{firstName}</Text>
+            <Text style={styles.status}>{statusLabel}</Text>
           </View>
         )}
 
@@ -198,17 +288,25 @@ export function CallScreen() {
             {...pipPanResponder.panHandlers}
             style={[styles.localPreview, { transform: [{ translateX: pan.x }, { translateY: pan.y }] }]}
           >
-            <RTCView
-              key={`local-${localStreamUrl}-${cameraFacing}`}
-              streamURL={localStreamUrl}
-              style={StyleSheet.absoluteFillObject}
-              objectFit="cover"
-              mirror={cameraFacing === "front"}
-              zOrder={2}
-            />
-            <Pressable 
+            <View style={styles.localPreviewFrame}>
+              <RTCView
+                key={`local-${localStreamUrl}-${cameraFacing}`}
+                streamURL={localStreamUrl}
+                style={StyleSheet.absoluteFillObject}
+                objectFit="cover"
+                mirror={cameraFacing === "front"}
+                zOrder={2}
+              />
+            </View>
+            <View style={styles.pipBadge}>
+              <Text style={styles.pipBadgeText}>{cameraFacing === "front" ? "Front" : "Back"}</Text>
+            </View>
+            <Pressable
               style={styles.pipSwapButton}
-              onPress={() => callManager.switchCamera()}
+              onPress={() => {
+                resetControlsTimeout();
+                callManager.switchCamera();
+              }}
             >
               <Feather name="refresh-cw" size={18} color="#ffffff" />
             </Pressable>
@@ -218,12 +316,24 @@ export function CallScreen() {
         {showControls ? (
           <>
             <View style={[styles.header, { paddingTop: Math.max(insets.top, 12) }]} pointerEvents="none">
-              <Text style={styles.remoteName}>{activeCall.remoteUserName}</Text>
-              <Text style={styles.subtle}>
-                {activeCall.mode === "video" ? "Video call" : "Audio call"} - {status}
+              <Text style={styles.remoteName}>{firstName}</Text>
+              <Text style={styles.subtle}>{statusLabel}</Text>
+              <Text
+                style={[
+                  styles.encryptionBadge,
+                  encryptionStatus === "verified"
+                    ? styles.encryptionBadgeVerified
+                    : encryptionStatus === "unverified"
+                      ? styles.encryptionBadgeUnverified
+                      : styles.encryptionBadgeUnknown,
+                ]}
+              >
+                {encryptionStatus === "verified"
+                  ? "Encrypted call verified"
+                  : encryptionStatus === "unverified"
+                    ? "Encryption check failed"
+                    : "Verifying encryption..."}
               </Text>
-              <Text style={styles.routeLabel}>{getAudioRouteLabel(activeAudioRoute, bluetoothDeviceName)}</Text>
-              <Text style={styles.securityNote}>Padlock \uD83D\uDD12 End-to-End Encrypted</Text>
             </View>
 
             {showAudioRouteMenu ? (
@@ -294,18 +404,13 @@ const styles = StyleSheet.create({
   },
   name: {
     color: "#ffffff",
-    fontSize: 30,
+    fontSize: 32,
     fontWeight: "800",
   },
   status: {
-    color: "#9fb0c8",
+    color: "#b8c7de",
     fontSize: 15,
-  },
-  securityNote: {
-    color: "#d8e7ff",
-    fontSize: 13,
     fontWeight: "600",
-    marginTop: 4,
   },
   header: {
     position: "absolute",
@@ -313,45 +418,81 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     paddingHorizontal: 20,
-    paddingTop: 12,
   },
   remoteName: {
     color: "#ffffff",
-    fontSize: 28,
+    fontSize: 30,
     fontWeight: "800",
   },
   subtle: {
-    color: "#9fb0c8",
+    color: "#b8c7de",
     fontSize: 14,
+    fontWeight: "600",
     marginTop: 4,
   },
-  routeLabel: {
-    color: "#d8e7ff",
-    fontSize: 13,
-    fontWeight: "600",
-    marginTop: 6,
+  encryptionBadge: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: "700",
+    overflow: "hidden",
+  },
+  encryptionBadgeVerified: {
+    color: "#052e16",
+    backgroundColor: "#86efac",
+  },
+  encryptionBadgeUnverified: {
+    color: "#7f1d1d",
+    backgroundColor: "#fecaca",
+  },
+  encryptionBadgeUnknown: {
+    color: "#dbeafe",
+    backgroundColor: "rgba(30, 64, 175, 0.7)",
   },
   localPreview: {
     position: "absolute",
-    bottom: 120,
-    right: 20,
-    width: 110,
-    height: 160,
-    borderRadius: 22,
-    overflow: "hidden",
+    top: 0,
+    left: 0,
+    width: PREVIEW_WIDTH,
+    height: PREVIEW_HEIGHT,
+    borderRadius: 24,
+    backgroundColor: "#0f172a",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.3,
     shadowRadius: 20,
     elevation: 8,
-    backgroundColor: "#1e293b",
     zIndex: 4,
+  },
+  localPreviewFrame: {
+    flex: 1,
+    borderRadius: 24,
+    overflow: "hidden",
+  },
+  pipBadge: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(15, 23, 42, 0.72)",
+  },
+  pipBadgeText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "700",
   },
   pipSwapButton: {
     position: "absolute",
     bottom: 8,
     right: 8,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: "rgba(0,0,0,0.52)",
     padding: 8,
     borderRadius: 16,
   },
