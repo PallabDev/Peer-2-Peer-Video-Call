@@ -3,6 +3,8 @@ type PushNotificationInput = {
     title: string;
     body: string;
     data?: Record<string, unknown>;
+    categoryId?: string;
+    channelId?: string;
 };
 
 export const sendExpoPushNotification = async (input: PushNotificationInput) => {
@@ -23,6 +25,8 @@ export const sendExpoPushNotification = async (input: PushNotificationInput) => 
                 body: input.body,
                 sound: "default",
                 priority: "high",
+                categoryId: input.categoryId,
+                channelId: input.channelId,
                 data: input.data ?? {},
             }),
         });

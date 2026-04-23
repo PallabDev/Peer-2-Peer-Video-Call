@@ -5,7 +5,7 @@ import { DeviceEventEmitter, type EmitterSubscription, PermissionsAndroid, Platf
 import { socketService } from "./socket";
 import { useCallStore } from "../store/call-store";
 import type { AudioRoute, BuiltInAudioRoute, CallMode, CallSession, Contact } from "../types/app";
-import { playIncomingCallNotification } from "./push-notifications";
+import { cancelIncomingCallNotification, playIncomingCallNotification } from "./push-notifications";
 import { navigationRef } from "../navigation/navigationRef";
 
 const ICE_SERVERS = [
@@ -44,7 +44,15 @@ class CallManager {
 
       useCallStore.getState().setIncomingCall(incomingCall);
       InCallManager.startRingtone("_DEFAULT_", [0, 250, 250, 250], "playback", 30);
-      await playIncomingCallNotification(incomingCall.remoteUserName, incomingCall.mode);
+      await playIncomingCallNotification(incomingCall);
+    });
+
+    socket.on("call:busy", (payload: { calleeId?: string; }) => {
+      const state = useCallStore.getState();
+      if (state.activeCall && (!payload.calleeId || state.activeCall.remoteUserId === payload.calleeId)) {
+        useCallStore.getState().setErrorMessage("User is busy on another call");
+      }
+      InCallManager.stopRingback();
     });
 
     socket.on("call:accepted", async (payload: { callId: string; }) => {
@@ -60,16 +68,28 @@ class CallManager {
     });
 
     socket.on("call:declined", async () => {
+      const { incomingCall } = useCallStore.getState();
+      if (incomingCall) {
+        await cancelIncomingCallNotification(incomingCall.callId);
+      }
       useCallStore.getState().setErrorMessage("Call declined");
       await this.reset();
     });
 
     socket.on("call:missed", async () => {
+      const { incomingCall } = useCallStore.getState();
+      if (incomingCall) {
+        await cancelIncomingCallNotification(incomingCall.callId);
+      }
       useCallStore.getState().setErrorMessage("Call timed out");
       await this.reset();
     });
 
     socket.on("call:cancelled", async () => {
+      const { incomingCall } = useCallStore.getState();
+      if (incomingCall) {
+        await cancelIncomingCallNotification(incomingCall.callId);
+      }
       await this.reset();
     });
 
@@ -130,6 +150,7 @@ class CallManager {
 
     socket.removeAllListeners("call:incoming");
     socket.removeAllListeners("call:accepted");
+    socket.removeAllListeners("call:busy");
     socket.removeAllListeners("call:declined");
     socket.removeAllListeners("call:missed");
     socket.removeAllListeners("call:cancelled");
@@ -168,27 +189,33 @@ class CallManager {
 
     useCallStore.getState().setActiveCall(activeCall);
     useCallStore.getState().setStatus("ringing");
-    useCallStore.getState().setPreferredBuiltInRoute(mode === "video" ? "SPEAKER_PHONE" : "EARPIECE");
-    useCallStore.getState().setPreferredExternalRoute(null);
-    useCallStore.getState().setActiveAudioRoute(mode === "video" ? "SPEAKER_PHONE" : "EARPIECE");
+    this.applyDefaultAudioPreferences(mode);
     InCallManager.startRingback("_DEFAULT_");
     return activeCall;
   }
 
+  hydrateIncomingCallFromNotification(incomingCall: CallSession) {
+    const state = useCallStore.getState();
+    if (state.activeCall?.callId === incomingCall.callId || state.incomingCall?.callId === incomingCall.callId) {
+      return;
+    }
+
+    useCallStore.getState().setIncomingCall(incomingCall);
+  }
+
   async acceptIncomingCall() {
     const incomingCall = useCallStore.getState().incomingCall;
-    const socket = socketService.getSocket();
+    const socket = await this.waitForSocket();
     if (!incomingCall || !socket) {
       return;
     }
 
     InCallManager.stopRingtone();
+    await cancelIncomingCallNotification(incomingCall.callId);
     useCallStore.getState().setActiveCall(incomingCall);
     useCallStore.getState().setIncomingCall(null);
     useCallStore.getState().setStatus("connecting");
-    useCallStore.getState().setPreferredBuiltInRoute(incomingCall.mode === "video" ? "SPEAKER_PHONE" : "EARPIECE");
-    useCallStore.getState().setPreferredExternalRoute(null);
-    useCallStore.getState().setActiveAudioRoute(incomingCall.mode === "video" ? "SPEAKER_PHONE" : "EARPIECE");
+    this.applyDefaultAudioPreferences(incomingCall.mode);
     await this.prepareLocalMedia(incomingCall.mode);
     await this.createPeerConnection(incomingCall, false);
     socket.emit("call:accept", { callId: incomingCall.callId });
@@ -196,12 +223,13 @@ class CallManager {
 
   async declineIncomingCall() {
     const incomingCall = useCallStore.getState().incomingCall;
-    const socket = socketService.getSocket();
+    const socket = await this.waitForSocket();
     if (!incomingCall || !socket) {
       return;
     }
 
     InCallManager.stopRingtone();
+    await cancelIncomingCallNotification(incomingCall.callId);
     socket.emit("call:decline", { callId: incomingCall.callId });
     useCallStore.getState().setIncomingCall(null);
   }
@@ -449,6 +477,13 @@ class CallManager {
     return "SPEAKER_PHONE";
   }
 
+  private applyDefaultAudioPreferences(mode: CallMode) {
+    const builtInRoute = mode === "video" ? "SPEAKER_PHONE" : "EARPIECE";
+    useCallStore.getState().setPreferredBuiltInRoute(builtInRoute);
+    useCallStore.getState().setPreferredExternalRoute(null);
+    useCallStore.getState().setActiveAudioRoute(builtInRoute);
+  }
+
   private applyAudioRoute(route: AudioRoute) {
     switch (route) {
       case "SPEAKER_PHONE":
@@ -457,10 +492,12 @@ class CallManager {
         void InCallManager.chooseAudioRoute("SPEAKER_PHONE");
         break;
       case "BLUETOOTH":
+        void InCallManager.requestAudioFocus();
         InCallManager.setForceSpeakerphoneOn(false);
         void InCallManager.chooseAudioRoute("BLUETOOTH");
         break;
       case "WIRED_HEADSET":
+        void InCallManager.requestAudioFocus();
         InCallManager.setForceSpeakerphoneOn(false);
         void InCallManager.chooseAudioRoute("WIRED_HEADSET");
         break;
@@ -589,6 +626,45 @@ class CallManager {
     }
 
     await PermissionsAndroid.request(bluetoothPermission);
+  }
+
+  private waitForSocket(timeoutMs = 8000) {
+    const currentSocket = socketService.getSocket();
+    if (currentSocket?.connected) {
+      return Promise.resolve(currentSocket);
+    }
+
+    return new Promise<ReturnType<typeof socketService.getSocket>>((resolve) => {
+      let socket = socketService.getSocket();
+      const cleanup = () => {
+        clearTimeout(timeout);
+        clearInterval(interval);
+        socket?.off("connect", handleConnect);
+      };
+      const handleConnect = () => {
+        cleanup();
+        resolve(socket);
+      };
+      const attachConnectListener = () => {
+        socket?.off("connect", handleConnect);
+        socket = socketService.getSocket();
+        if (socket?.connected) {
+          cleanup();
+          resolve(socket);
+          return;
+        }
+
+        socket?.once("connect", handleConnect);
+      };
+      const interval = setInterval(attachConnectListener, 250);
+      const timeout = setTimeout(() => {
+        cleanup();
+        const finalSocket = socketService.getSocket();
+        resolve(finalSocket?.connected ? finalSocket : null);
+      }, timeoutMs);
+
+      attachConnectListener();
+    });
   }
 
   private navigateAwayFromCallScreen() {

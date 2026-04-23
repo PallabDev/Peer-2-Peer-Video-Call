@@ -47,6 +47,32 @@ const emitToUser = (userId: string, event: string, payload: Record<string, unkno
     io?.to(`user:${userId}`).emit(event, payload);
 };
 
+const findActiveCallForUser = (userId: string) => {
+    for (const call of activeCalls.values()) {
+        if (call.callerId === userId || call.calleeId === userId) {
+            return call;
+        }
+    }
+
+    return null;
+};
+
+const isCallParticipant = (call: ActiveCall, userId: string) => (
+    call.callerId === userId || call.calleeId === userId
+);
+
+const getOtherParticipantId = (call: ActiveCall, userId: string) => {
+    if (call.callerId === userId) {
+        return call.calleeId;
+    }
+
+    if (call.calleeId === userId) {
+        return call.callerId;
+    }
+
+    return null;
+};
+
 const clearCall = (callId: string) => {
     const call = activeCalls.get(callId);
     if (call?.timeout) {
@@ -84,13 +110,23 @@ const relayWebRtcMessage = (
 ) => {
     socket.on(eventName, async (payload: { callId: string; toUserId: string; sdp?: unknown; candidate?: unknown; }) => {
         const call = activeCalls.get(payload.callId);
+        const senderId = (socket.data.user as { id: string; }).id;
         if (!call) {
+            return;
+        }
+
+        const expectedRecipientId = getOtherParticipantId(call, senderId);
+        if (!expectedRecipientId || payload.toUserId !== expectedRecipientId) {
+            return;
+        }
+
+        if (eventName !== "webrtc:ice-candidate" && call.state !== "answered") {
             return;
         }
 
         emitToUser(payload.toUserId, eventName, {
             ...payload,
-            fromUserId: (socket.data.user as { id: string; }).id,
+            fromUserId: senderId,
         });
     });
 };
@@ -137,8 +173,35 @@ export const configureSocketServer = (server: HttpServer) => {
                     throw new ApiError(400, "Invalid call mode.");
                 }
 
+                if (payload.toUserId === user.id) {
+                    throw new ApiError(400, "You cannot call yourself.");
+                }
+
                 const caller = await assertCallableUser(user.id);
                 const callee = await assertCallableUser(payload.toUserId);
+                const callerActiveCall = findActiveCallForUser(caller.id);
+                const calleeActiveCall = findActiveCallForUser(callee.id);
+
+                if (callerActiveCall) {
+                    callback?.({
+                        success: false,
+                        code: "CALLER_BUSY",
+                        message: "You are already in a call.",
+                    });
+                    return;
+                }
+
+                if (calleeActiveCall) {
+                    emitToUser(caller.id, "call:busy", {
+                        calleeId: callee.id,
+                    });
+                    callback?.({
+                        success: false,
+                        code: "USER_BUSY",
+                        message: `${callee.firstName} is busy on another call.`,
+                    });
+                    return;
+                }
 
                 const callLog = await createCallLog(caller.id, callee.id, payload.mode);
                 activeCalls.set(callLog.id, {
@@ -170,8 +233,11 @@ export const configureSocketServer = (server: HttpServer) => {
                             type: "incoming-call",
                             callId: callLog.id,
                             callerId: caller.id,
+                            callerName: `${caller.firstName}${caller.lastName ? ` ${caller.lastName}` : ""}`.trim(),
                             mode: payload.mode,
                         },
+                        categoryId: "incoming_call",
+                        channelId: "calls",
                     });
                 }
 
@@ -223,7 +289,7 @@ export const configureSocketServer = (server: HttpServer) => {
 
         socket.on("call:decline", async (payload: { callId: string; }) => {
             const call = activeCalls.get(payload.callId);
-            if (!call) {
+            if (!call || !isCallParticipant(call, user.id)) {
                 return;
             }
 
@@ -246,7 +312,7 @@ export const configureSocketServer = (server: HttpServer) => {
 
         socket.on("call:end", async (payload: { callId: string; }) => {
             const call = activeCalls.get(payload.callId);
-            if (!call) {
+            if (!call || !isCallParticipant(call, user.id)) {
                 return;
             }
 

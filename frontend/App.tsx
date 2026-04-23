@@ -15,7 +15,12 @@ import { useSocketBridge } from "./src/hooks/useSocketBridge";
 import { useThemePalette } from "./src/theme/useThemePalette";
 import { flushPendingLink, handleIncomingLink } from "./src/utils/linking";
 import { IncomingCallModal } from "./src/components/IncomingCallModal";
-import { initializeNotificationCategories } from "./src/services/push-notifications";
+import {
+  ANSWER_CALL_ACTION,
+  DECLINE_CALL_ACTION,
+  initializeNotificationCategories,
+  parseIncomingCallNotification,
+} from "./src/services/push-notifications";
 import { callManager } from "./src/services/call-manager";
 
 Notifications.setNotificationHandler({
@@ -62,17 +67,36 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+    const handleNotificationResponse = (response: Notifications.NotificationResponse | null) => {
+      if (!response) {
+        return;
+      }
+
       const actionId = response.actionIdentifier;
-      if (actionId === "answer") {
+      const incomingCall = parseIncomingCallNotification(response.notification.request.content.data);
+      if (incomingCall) {
+        callManager.hydrateIncomingCallFromNotification(incomingCall);
+      }
+
+      if (actionId === ANSWER_CALL_ACTION) {
         void callManager.acceptIncomingCall().then(() => {
           if (navigationRef.isReady()) {
             navigationRef.navigate("Call");
           }
         });
-      } else if (actionId === "decline") {
+      } else if (actionId === DECLINE_CALL_ACTION) {
         void callManager.declineIncomingCall();
+      } else if (incomingCall && navigationRef.isReady()) {
+        navigationRef.navigate("Home");
       }
+    };
+
+    handleNotificationResponse(Notifications.getLastNotificationResponse());
+    Notifications.clearLastNotificationResponse();
+
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      handleNotificationResponse(response);
+      Notifications.clearLastNotificationResponse();
     });
 
     return () => subscription.remove();
