@@ -10,15 +10,14 @@ import type { Contact } from "../types/app";
 import { ContactCard } from "../components/ContactCard";
 import { callManager } from "../services/call-manager";
 import type { RootStackParamList } from "../navigation/navigationRef";
-import { useCallStore } from "../store/call-store";
+import { hasLiveCall, useCallStore } from "../store/call-store";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Home">;
 
 export function HomeScreen({ navigation }: Props) {
   const palette = useThemePalette(useColorScheme());
   const { user, logout } = useAuthStore();
-  const activeCall = useCallStore((state) => state.activeCall);
-  const incomingCall = useCallStore((state) => state.incomingCall);
+  const isLiveCallInProgress = useCallStore((state) => hasLiveCall(state));
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [error, setError] = useState("");
   const [startingCallFor, setStartingCallFor] = useState<string | null>(null);
@@ -37,7 +36,7 @@ export function HomeScreen({ navigation }: Props) {
     void loadContacts();
   }, []);
 
-  const isCallLocked = Boolean(activeCall || incomingCall || startingCallFor);
+  const isCallLocked = Boolean(isLiveCallInProgress || startingCallFor);
 
   const handleStartCall = async (contact: Contact, mode: "audio" | "video") => {
     if (isCallLocked) {

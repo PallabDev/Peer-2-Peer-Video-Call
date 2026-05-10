@@ -35,6 +35,8 @@ type CallState = {
   reset: () => void;
 };
 
+const liveCallStatuses: ReadonlyArray<CallState["status"]> = ["ringing", "incoming", "connecting", "connected"];
+
 const initialState = {
   incomingCall: null,
   activeCall: null,
@@ -78,3 +80,11 @@ export const useCallStore = create<CallState>((set) => ({
   setEncryptionStatus: (encryptionStatus) => set({ encryptionStatus }),
   reset: () => set(initialState),
 }));
+
+export function hasLiveCall(state: Pick<CallState, "activeCall" | "incomingCall" | "status">) {
+  if (state.incomingCall) {
+    return true;
+  }
+
+  return Boolean(state.activeCall && liveCallStatuses.includes(state.status));
+}

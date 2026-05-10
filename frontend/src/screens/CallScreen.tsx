@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { RTCView } from "react-native-webrtc";
-import { useCallStore } from "../store/call-store";
+import { hasLiveCall, useCallStore } from "../store/call-store";
 import { callManager } from "../services/call-manager";
 import { useThemePalette } from "../theme/useThemePalette";
 import { navigationRef } from "../navigation/navigationRef";
@@ -143,6 +143,7 @@ export function CallScreen() {
     errorMessage,
     encryptionStatus,
   } = useCallStore();
+  const isLiveCallInProgress = useCallStore((state) => hasLiveCall(state) && Boolean(state.activeCall));
 
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -231,7 +232,7 @@ export function CallScreen() {
   }, [resetControlsTimeout]);
 
   useEffect(() => {
-    if (activeCall || !navigationRef.isReady() || navigationRef.getCurrentRoute()?.name !== "Call") {
+    if (isLiveCallInProgress || !navigationRef.isReady() || navigationRef.getCurrentRoute()?.name !== "Call") {
       return;
     }
 
@@ -241,7 +242,7 @@ export function CallScreen() {
     }
 
     navigationRef.navigate("Home");
-  }, [activeCall]);
+  }, [isLiveCallInProgress]);
 
   const hasAudioRoutePicker = availableAudioRoutes.includes("BLUETOOTH") || availableAudioRoutes.includes("WIRED_HEADSET");
   const audioRouteOptions = getAudioRouteOptions(availableAudioRoutes, bluetoothDeviceName);
@@ -256,7 +257,7 @@ export function CallScreen() {
     void callManager.toggleSpeaker();
   };
 
-  if (!activeCall) {
+  if (!activeCall || !isLiveCallInProgress) {
     return <SafeAreaView style={[styles.safeArea, { backgroundColor: "#040811" }]} />;
   }
 

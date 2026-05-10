@@ -3,7 +3,7 @@ import { Feather } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootStackParamList } from "../navigation/navigationRef";
 import { navigationRef } from "../navigation/navigationRef";
-import { useCallStore } from "../store/call-store";
+import { hasLiveCall, useCallStore } from "../store/call-store";
 import { useThemePalette } from "../theme/useThemePalette";
 
 type Props = {
@@ -37,8 +37,9 @@ export function OngoingCallBanner({ currentRoute }: Props) {
   const insets = useSafeAreaInsets();
   const activeCall = useCallStore((state) => state.activeCall);
   const status = useCallStore((state) => state.status);
+  const showBanner = useCallStore((state) => hasLiveCall(state) && Boolean(state.activeCall));
 
-  if (!activeCall || currentRoute === "Call") {
+  if (!showBanner || !activeCall || currentRoute === "Call") {
     return null;
   }
 

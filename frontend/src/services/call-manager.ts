@@ -3,7 +3,7 @@ import type { MediaStream } from "react-native-webrtc";
 import InCallManager from "react-native-incall-manager";
 import { Alert, DeviceEventEmitter, type EmitterSubscription, PermissionsAndroid, Platform } from "react-native";
 import { socketService } from "./socket";
-import { useCallStore } from "../store/call-store";
+import { hasLiveCall, useCallStore } from "../store/call-store";
 import type { AudioRoute, BuiltInAudioRoute, CallIdentityProof, CallMode, CallSession, Contact } from "../types/app";
 import {
   cancelIncomingCallNotification,
@@ -40,21 +40,13 @@ class CallManager {
     this.attachAudioRouteListener();
 
     socket.on("call:incoming", async (payload: { callId: string; callerId: string; callerName?: string; mode: CallMode; }) => {
-      const state = useCallStore.getState();
-      if (state.activeCall?.callId === payload.callId || state.incomingCall?.callId === payload.callId) {
-        return;
-      }
-
-      const incomingCall: CallSession = {
+      this.presentIncomingCall({
         callId: payload.callId,
         remoteUserId: payload.callerId,
         remoteUserName: payload.callerName ?? "Unknown caller",
         mode: payload.mode,
         direction: "incoming",
-      };
-
-      useCallStore.getState().setIncomingCall(incomingCall);
-      InCallManager.startRingtone("_DEFAULT_", [0, 250, 250, 250], "playback", 30);
+      });
     });
 
     socket.on("call:busy", (payload: { calleeId?: string; }) => {
@@ -208,7 +200,7 @@ class CallManager {
 
   async startOutgoingCall(contact: Contact, mode: CallMode) {
     const state = useCallStore.getState();
-    if (this.outgoingCallPending || state.activeCall || state.incomingCall) {
+    if (this.outgoingCallPending || hasLiveCall(state)) {
       throw new Error("A call is already in progress.");
     }
 
@@ -249,12 +241,18 @@ class CallManager {
   }
 
   hydrateIncomingCallFromNotification(incomingCall: CallSession) {
+    this.presentIncomingCall(incomingCall);
+  }
+
+  private presentIncomingCall(incomingCall: CallSession) {
     const state = useCallStore.getState();
     if (state.activeCall?.callId === incomingCall.callId || state.incomingCall?.callId === incomingCall.callId) {
       return;
     }
 
     useCallStore.getState().setIncomingCall(incomingCall);
+    useCallStore.getState().setErrorMessage(null);
+    InCallManager.startRingtone("_DEFAULT_", [0, 250, 250, 250], "playback", 30);
   }
 
   async acceptIncomingCall() {

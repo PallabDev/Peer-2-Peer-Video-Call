@@ -138,6 +138,19 @@ export default function App() {
     return () => subscription.remove();
   }, []);
 
+  useEffect(() => {
+    const subscription = Notifications.addNotificationReceivedListener((notification) => {
+      const incomingCall = parseIncomingCallNotification(notification.request.content.data);
+      if (!incomingCall) {
+        return;
+      }
+
+      callManager.hydrateIncomingCallFromNotification(incomingCall);
+    });
+
+    return () => subscription.remove();
+  }, []);
+
   if (authLoading || (user && appLockLoading)) {
     return <LoadingScreen />;
   }
